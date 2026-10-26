@@ -1,6 +1,6 @@
 /**
- * ======================== ТОНКИЙ КЛИЕНТ BOT API ========================
- * Никогда не бросает исключения на HTTP-ошибках: возвращает {ok:false, error_code, description, parameters}.
+ * ======================== THIN BOT API CLIENT ==========================
+ * Never throws on HTTP errors: returns {ok:false, error_code, description, parameters}.
  */
 
 function tgUrl_(method) { return 'https://api.telegram.org/bot' + getToken_() + '/' + method; }
@@ -30,7 +30,7 @@ function tg_(method, payload) {
   }
 }
 
-/** Как tg_, но бросает Error при ok:false. Для setup-функций. */
+/** Like tg_, but throws an Error on ok:false. Used by setup functions. */
 function tgCall_(method, payload) {
   const r = tg_(method, payload);
   if (!r.ok) {
@@ -41,7 +41,7 @@ function tgCall_(method, payload) {
   return r.result;
 }
 
-/** Параллельная отправка ОДНОЙ пачки запросов. calls: [{method, payload}] */
+/** Sends ONE batch of requests in parallel. calls: [{method, payload}] */
 function tgBatch_(calls) {
   if (!calls.length) return [];
   const reqs = calls.map(function (c) {
@@ -52,12 +52,12 @@ function tgBatch_(calls) {
   try {
     return UrlFetchApp.fetchAll(reqs).map(tgParse_);
   } catch (e) {
-    // fetchAll падает целиком при сетевой ошибке — откатываемся на последовательную отправку
+    // fetchAll fails as a whole on a network error — fall back to sequential requests
     return calls.map(function (c) { return tg_(c.method, c.payload); });
   }
 }
 
-/** Много запросов: пачками по CFG.SEND_BATCH с паузой (лимит Telegram ~30 запросов/с). */
+/** Many requests: batches of CFG.SEND_BATCH with a pause (Telegram limit ~30 req/s). */
 function tgBatchChunked_(calls) {
   let out = [];
   for (let i = 0; i < calls.length; i += CFG.SEND_BATCH) {
@@ -67,7 +67,7 @@ function tgBatchChunked_(calls) {
   return out;
 }
 
-/** Делит текст на части ≤4000 символов: по строкам (чтобы не рвать HTML-теги), слишком длинные строки — жёстко. */
+/** Splits text into parts ≤4000 chars: by lines (so HTML tags aren't broken), over-long lines are hard-cut. */
 function splitMessage_(html) {
   const LIMIT = 4000;
   const parts = [];
@@ -85,11 +85,11 @@ function splitMessage_(html) {
   return parts;
 }
 
-/** Ответ в личку (HTML). */
+/** Reply in private chat (HTML). */
 function reply_(chatId, html) {
   splitMessage_(html).forEach(function (p) {
     const r = tg_('sendMessage', { chat_id: chatId, text: p, parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
-    if (!r.ok && r.error_code === 400) tg_('sendMessage', { chat_id: chatId, text: p.replace(/<[^>]+>/g, '') }); // битая разметка → без неё
+    if (!r.ok && r.error_code === 400) tg_('sendMessage', { chat_id: chatId, text: p.replace(/<[^>]+>/g, '') }); // broken markup → resend as plain text
   });
 }
 
@@ -99,7 +99,7 @@ function notifyAdmins_(html) {
   });
 }
 
-/** Ссылка на сообщение (работает для каналов/супергрупп). */
+/** Link to a message (works for channels/supergroups). */
 function messageLink_(chatId, username, messageId) {
   if (!messageId) return '';
   if (username) return 'https://t.me/' + username + '/' + messageId;
@@ -109,16 +109,16 @@ function messageLink_(chatId, username, messageId) {
 }
 
 function chatTypeName_(t) {
-  return { channel: 'канал', supergroup: 'супергруппа', group: 'группа' }[t] || t;
+  return { channel: 'channel', supergroup: 'supergroup', group: 'group' }[t] || t;
 }
 
-// ----------------------------- Проверка прав -----------------------------
+// ---------------------------- Permission check ----------------------------
 
 /**
- * Пакетная проверка: может ли бот публиковать в чатах.
- * Два раунда параллельных запросов (getChat, затем getChatMember) вместо 2×N последовательных:
- * 50 чатов проверяются за ~2-3 с, а не за ~40 с (важно — вебхук не должен отвечать дольше минуты).
- * Возвращает массив {ok, chat, problems[], warnings[]} в порядке refs.
+ * Batch check: can the bot post to these chats?
+ * Two rounds of parallel requests (getChat, then getChatMember) instead of 2×N sequential ones:
+ * 50 chats are checked in ~2-3 s instead of ~40 s (important — a webhook must answer within a minute).
+ * Returns an array of {ok, chat, problems[], warnings[]} in the order of refs.
  */
 function checkChatsAccess_(refs) {
   const results = refs.map(function () { return { ok: false, chat: null, problems: [], warnings: [] }; });
@@ -130,12 +130,12 @@ function checkChatsAccess_(refs) {
     const r = results[i];
     if (!gc.ok) {
       r.problems.push(gc.error_code === 400 || gc.error_code === 403
-        ? 'бот не видит этот чат — он не добавлен туда или ID неверный'
-        : 'ошибка Telegram: ' + esc_(gc.description));
+        ? 'the bot can\'t see this chat — it hasn\'t been added or the ID is wrong'
+        : 'Telegram error: ' + esc_(gc.description));
       return;
     }
     r.chat = gc.result;
-    if (r.chat.type === 'private') { r.problems.push('это личный чат, а не группа/канал'); return; }
+    if (r.chat.type === 'private') { r.problems.push('this is a private chat, not a group/channel'); return; }
     pending.push(i);
   });
 
@@ -144,7 +144,7 @@ function checkChatsAccess_(refs) {
   }));
   memberResps.forEach(function (gm, k) {
     const r = results[pending[k]];
-    if (!gm.ok) { r.problems.push('не удалось получить права бота: ' + esc_(gm.description)); return; }
+    if (!gm.ok) { r.problems.push('could not get the bot\'s permissions: ' + esc_(gm.description)); return; }
     evaluateRights_(r, r.chat, gm.result);
   });
 
@@ -154,27 +154,27 @@ function checkChatsAccess_(refs) {
 
 function checkChatAccess_(ref) { return checkChatsAccess_([ref])[0]; }
 
-/** Чистая логика прав (без запросов) — переиспользуется и в уведомлениях my_chat_member. */
+/** Pure permission logic (no requests) — also reused for my_chat_member notifications. */
 function evaluateRights_(r, chat, m) {
-  if (m.status === 'left') { r.problems.push('бот не состоит в этом чате'); return r; }
-  if (m.status === 'kicked') { r.problems.push('бот удалён/заблокирован в этом чате'); return r; }
+  if (m.status === 'left') { r.problems.push('the bot is not a member of this chat'); return r; }
+  if (m.status === 'kicked') { r.problems.push('the bot was removed/banned from this chat'); return r; }
 
   if (chat.type === 'channel') {
-    if (m.status !== 'administrator') r.problems.push('в канале бот должен быть <b>администратором</b>');
-    else if (!m.can_post_messages) r.problems.push('у бота нет права «Публикация сообщений» (Post messages)');
+    if (m.status !== 'administrator') r.problems.push('in a channel the bot must be an <b>administrator</b>');
+    else if (!m.can_post_messages) r.problems.push('the bot lacks the "Post messages" right');
     return r;
   }
   const isAdm = m.status === 'administrator' || m.status === 'creator';
   if (m.status === 'restricted' && !m.can_send_messages) {
-    r.problems.push('боту запрещено отправлять сообщения в этой группе');
+    r.problems.push('the bot is not allowed to send messages in this group');
   } else if (m.status === 'member' && chat.permissions && chat.permissions.can_send_messages === false) {
-    r.problems.push('участникам группы запрещено писать — сделайте бота администратором');
+    r.problems.push('members can\'t send messages in this group — make the bot an admin');
   }
   if (!isAdm && chat.slow_mode_delay) {
-    r.warnings.push('включён медленный режим (' + chat.slow_mode_delay + ' с) — на бота-не-админа он действует');
+    r.warnings.push('slow mode is on (' + chat.slow_mode_delay + ' s) — it applies to a non-admin bot');
   }
   if (!isAdm && chat.permissions && chat.permissions.can_send_photos === false) {
-    r.warnings.push('участникам запрещены фото — посты с медиа могут не пройти');
+    r.warnings.push('members can\'t send photos — media posts may fail');
   }
   return r;
 }

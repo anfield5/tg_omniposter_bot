@@ -1,6 +1,6 @@
 /**
- * ============================== ПАРСЕРЫ ==============================
- * Чистые функции без обращений к Telegram/Sheets — легко тестируются.
+ * =============================== PARSERS ===============================
+ * Pure functions with no Telegram/Sheets access — easy to test.
  */
 
 const POST_FLAG_ALIASES = {
@@ -10,30 +10,30 @@ const POST_FLAG_ALIASES = {
 
 function pad2_(n) { return (n < 10 ? '0' : '') + n; }
 
-/** "2h" | "0.75h" | "45m" | "1d" | "1,5ч" → минуты */
+/** "2h" | "0.75h" | "45m" | "1d" | "1,5h" → minutes */
 function parseDuration_(s) {
   const m = String(s).trim().toLowerCase().replace(',', '.')
-    .match(/^(\d+(?:\.\d+)?)\s*(m|min|мин|м|h|ч|d|д)?$/);
-  if (!m) throw new UserError('Неверный интервал «' + esc_(s) + '». Примеры: <code>2h</code>, <code>0.75h</code>, <code>45m</code>, <code>1d</code>');
+    .match(/^(\d+(?:\.\d+)?)\s*(m|min|h|d)?$/);
+  if (!m) throw new UserError('Invalid interval "' + esc_(s) + '". Examples: <code>2h</code>, <code>0.75h</code>, <code>45m</code>, <code>1d</code>');
   const u = m[2] || 'h';
-  const mult = /^(m|min|мин|м)$/.test(u) ? 1 : /^(d|д)$/.test(u) ? 1440 : 60;
+  const mult = u === 'm' || u === 'min' ? 1 : u === 'd' ? 1440 : 60;
   const minutes = Math.round(parseFloat(m[1]) * mult);
-  if (minutes < CFG.MIN_INTERVAL_MIN) throw new UserError('Минимальный интервал — ' + CFG.MIN_INTERVAL_MIN + ' мин');
+  if (minutes < CFG.MIN_INTERVAL_MIN) throw new UserError('The minimum interval is ' + CFG.MIN_INTERVAL_MIN + ' min');
   return minutes;
 }
 
-/** "24.10.2026 14:00" (в часовом поясе tz) | "now" → {ms, now} */
+/** "24.10.2026 14:00" (in time zone tz) | "now" → {ms, now} */
 function parseDateTime_(s, tz) {
   s = String(s).trim();
-  if (/^(now|сейчас)$/i.test(s)) return { ms: Date.now(), now: true };
+  if (/^now$/i.test(s)) return { ms: Date.now(), now: true };
   const m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})[\sT,]+(\d{1,2}):(\d{2})$/);
-  if (!m) throw new UserError('Неверная дата «' + esc_(s) + '». Формат: <code>24.10.2026 14:00</code> или <code>now</code>');
+  if (!m) throw new UserError('Invalid date "' + esc_(s) + '". Format: <code>24.10.2026 14:00</code> or <code>now</code>');
   const d = +m[1], mo = +m[2], y = +m[3], h = +m[4], mi = +m[5];
   const norm = pad2_(d) + '.' + pad2_(mo) + '.' + y + ' ' + pad2_(h) + ':' + pad2_(mi);
-  const bad = new UserError('Несуществующая дата/время «' + esc_(s) + '»');
+  const bad = new UserError('Date/time does not exist: "' + esc_(s) + '"');
   if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59) throw bad;
   const date = Utilities.parseDate(norm, tz, 'dd.MM.yyyy HH:mm');
-  // parseDate «прощает» 31.02 → 03.03, а также время в «дыре» перевода часов — ловим обратным форматированием
+  // parseDate is lenient (31.02 → 03.03, times inside a DST gap) — catch it by formatting back
   if (Utilities.formatDate(date, tz, 'dd.MM.yyyy HH:mm') !== norm) throw bad;
   return { ms: date.getTime(), now: false };
 }
@@ -42,7 +42,7 @@ function unquote_(v) {
   return String(v).trim().replace(/^["'«“„]+/, '').replace(/["'»”“]+$/, '').trim();
 }
 
-/** @username | -100123 | 123 | https://t.me/name | https://t.me/c/123/45 → ссылка на чат для Bot API */
+/** @username | -100123 | 123 | https://t.me/name | https://t.me/c/123/45 → chat reference for the Bot API */
 function normalizeChatRef_(s) {
   s = String(s || '').trim();
   let m = s.match(/t\.me\/c\/(\d+)/i);
@@ -52,19 +52,19 @@ function normalizeChatRef_(s) {
   if (/^-?\d+$/.test(s)) return s;
   m = s.match(/^@?([A-Za-z][A-Za-z0-9_]{3,})$/);
   if (m) return '@' + m[1];
-  throw new UserError('Неверный ID чата «' + esc_(s) + '». Пример: <code>-1001234567890</code> или <code>@channel</code>');
+  throw new UserError('Invalid chat ID "' + esc_(s) + '". Example: <code>-1001234567890</code> or <code>@channel</code>');
 }
 
 function validateListName_(s) {
   s = String(s || '').trim();
-  if (!s) throw new UserError('Укажите имя списка');
-  if (!/^[\p{L}\p{N}_.\-]{1,64}$/u.test(s)) throw new UserError('Имя списка: одно слово (буквы, цифры, _ . -), до 64 символов');
+  if (!s) throw new UserError('Specify a list name');
+  if (!/^[\p{L}\p{N}_.\-]{1,64}$/u.test(s)) throw new UserError('List name: a single word (letters, digits, _ . -), up to 64 characters');
   return s;
 }
 
 /**
- * Переносит entities (жирный, ссылки и т.д.) из исходного сообщения в вырезанный фрагмент.
- * Смещения Telegram — в UTF-16, как и индексы строк JS, поэтому арифметика корректна.
+ * Moves entities (bold, links, etc.) from the original message onto the extracted fragment.
+ * Telegram offsets are in UTF-16 code units, same as JS string indices, so the math is exact.
  */
 function shiftEntities_(entities, start, len) {
   return (entities || []).map(function (e) {
@@ -80,9 +80,9 @@ function shiftEntities_(entities, start, len) {
 }
 
 /**
- * Разбор /post.
- *   /post <текст> (-list имя | -chat id) [-start "дата"|now] [-regularity 2h] [-end "дата"] [-mix 0.75h in 2]
- * Текст — всё до первого флага. Флаги принимают и «—» (iOS заменяет «--» на длинное тире).
+ * Parses /post.
+ *   /post <text> (-list name | -chat id) [-start "date"|now] [-regularity 2h] [-end "date"] [-mix 0.75h in 2]
+ * The text is everything before the first flag. Flags also accept "—" (iOS turns "--" into an em dash).
  */
 function parsePostArgs_(raw, entities, nowMs, tz) {
   raw = String(raw || '');
@@ -100,11 +100,11 @@ function parsePostArgs_(raw, entities, nowMs, tz) {
   const flags = {};
   marks.forEach(function (mk, i) {
     const end = i + 1 < marks.length ? marks[i + 1].from : body.length;
-    if (flags[mk.name] !== undefined) throw new UserError('Флаг <code>-' + mk.name + '</code> указан дважды');
+    if (flags[mk.name] !== undefined) throw new UserError('Flag <code>-' + mk.name + '</code> is specified twice');
     flags[mk.name] = unquote_(body.slice(mk.valFrom, end));
   });
   Object.keys(flags).forEach(function (k) {
-    if (!flags[k]) throw new UserError('У флага <code>-' + k + '</code> нет значения');
+    if (!flags[k]) throw new UserError('Flag <code>-' + k + '</code> has no value');
   });
 
   const rawText = body.slice(0, marks.length ? marks[0].from : body.length);
@@ -113,31 +113,31 @@ function parsePostArgs_(raw, entities, nowMs, tz) {
   const ents = shiftEntities_(entities, base + lead, text.length);
 
   if (flags.list === undefined && flags.chat === undefined) {
-    throw new UserError('Укажите, куда постить: <code>-list имя</code> или <code>-chat id</code>');
+    throw new UserError('Specify where to post: <code>-list name</code> or <code>-chat id</code>');
   }
-  if (flags.list !== undefined && flags.chat !== undefined) throw new UserError('Нужно что-то одно: <code>-list</code> или <code>-chat</code>');
-  if (flags.regularity && flags.mix) throw new UserError('<code>-regularity</code> и <code>-mix</code> взаимоисключающие');
+  if (flags.list !== undefined && flags.chat !== undefined) throw new UserError('Use only one of <code>-list</code> or <code>-chat</code>');
+  if (flags.regularity && flags.mix) throw new UserError('<code>-regularity</code> and <code>-mix</code> are mutually exclusive');
 
   const start = flags.start ? parseDateTime_(flags.start, tz) : { ms: nowMs, now: true };
   if (start.now) start.ms = nowMs;
-  if (!start.now && start.ms < nowMs - 60 * 1000) throw new UserError('Время старта ' + esc_(flags.start) + ' уже прошло');
+  if (!start.now && start.ms < nowMs - 60 * 1000) throw new UserError('Start time ' + esc_(flags.start) + ' is in the past');
 
   let interval = 0, mixCount = 0;
   if (flags.regularity) interval = parseDuration_(flags.regularity);
   if (flags.mix) {
-    if (flags.chat !== undefined) throw new UserError('<code>-mix</code> работает только со списком (<code>-list</code>)');
-    const mm = flags.mix.match(/^(.+?)\s+(?:in|из|в)\s+(\d+)$/i);
-    if (!mm) throw new UserError('Формат: <code>-mix 0.75h in 2</code>');
+    if (flags.chat !== undefined) throw new UserError('<code>-mix</code> only works with a list (<code>-list</code>)');
+    const mm = flags.mix.match(/^(.+?)\s+in\s+(\d+)$/i);
+    if (!mm) throw new UserError('Format: <code>-mix 0.75h in 2</code>');
     interval = parseDuration_(mm[1]);
     mixCount = parseInt(mm[2], 10);
-    if (mixCount < 1) throw new UserError('В <code>-mix … in N</code> N должно быть ≥ 1');
+    if (mixCount < 1) throw new UserError('In <code>-mix … in N</code>, N must be ≥ 1');
   }
 
   let endMs = null;
   if (flags.end) {
-    if (!interval) throw new UserError('<code>-end</code> имеет смысл только вместе с <code>-regularity</code> или <code>-mix</code>');
+    if (!interval) throw new UserError('<code>-end</code> only makes sense with <code>-regularity</code> or <code>-mix</code>');
     endMs = parseDateTime_(flags.end, tz).ms;
-    if (endMs < start.ms) throw new UserError('Дата окончания раньше даты старта');
+    if (endMs < start.ms) throw new UserError('End date is before the start date');
   }
 
   return {
@@ -153,9 +153,9 @@ function parsePostArgs_(raw, entities, nowMs, tz) {
 }
 
 /**
- * Следующий запуск после выполненного. Пропущенные слоты (если Google задержал триггер)
- * не «досылаются» пачкой, а пропускаются. end — включительно.
- * Возвращает ms или null (задача завершена).
+ * Next run after a completed one. Missed slots (if Google delayed the trigger)
+ * are skipped, not sent as a burst. end is inclusive.
+ * Returns ms, or null if the job is finished.
  */
 function computeNextRun_(prevRunMs, intervalMin, endMs, nowMs) {
   if (!intervalMin) return null;
@@ -166,14 +166,14 @@ function computeNextRun_(prevRunMs, intervalMin, endMs, nowMs) {
   return next;
 }
 
-/** Сколько всего публикаций будет у задачи с концом (для подтверждения). */
+/** Total number of posts for a job with an end date (for the confirmation message). */
 function countRuns_(startMs, intervalMin, endMs) {
   if (!intervalMin) return 1;
   if (!endMs) return Infinity;
   return Math.floor((endMs - startMs) / (intervalMin * 60000)) + 1;
 }
 
-/** k случайных элементов (частичный Фишер–Йетс). */
+/** k random elements (partial Fisher–Yates). */
 function sample_(arr, k) {
   const a = arr.slice();
   if (k >= a.length) return a;

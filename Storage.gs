@@ -1,15 +1,15 @@
 /**
- * ===================== ХРАНИЛИЩЕ: GOOGLE SHEETS =====================
- * Таблица, к которой привязан скрипт, — это и БД, и журнал публикаций.
+ * ======================== STORAGE: GOOGLE SHEETS ========================
+ * The spreadsheet the script is bound to is both the database and the post log.
  *
- *   Lists — списки
- *   Chats — связь «список ↔ чат» (один чат может быть в нескольких списках)
- *   Jobs  — заготовки постов / расписания
- *   Log   — журнал: каждая отправка с message_id и ссылкой
+ *   Lists — lists
+ *   Chats — list ↔ chat links (one chat can belong to several lists)
+ *   Jobs  — post templates / schedules
+ *   Log   — every delivery with message_id and link
  *
- * Чтения кэшируются в пределах ОДНОГО выполнения скрипта (одна команда / один tick)
- * и сбрасываются при любой записи в этот лист. Между выполнениями кэша нет —
- * поэтому ручные правки таблицы всегда подхватываются.
+ * Reads are cached within ONE script execution (one command / one tick)
+ * and dropped on any write to that sheet. There is no cache between executions,
+ * so manual edits to the spreadsheet are always picked up.
  */
 
 const SHEET_DEFS = {
@@ -31,7 +31,7 @@ function ss_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   if (ss) return ss;
   const id = prop_('SPREADSHEET_ID');
-  if (!id) throw new Error('Скрипт не привязан к таблице и не задан SPREADSHEET_ID');
+  if (!id) throw new Error('The script is not bound to a spreadsheet and SPREADSHEET_ID is not set');
   return SpreadsheetApp.openById(id);
 }
 
@@ -50,9 +50,9 @@ function sheet_(key) {
 }
 
 /**
- * Любая строка пишется с префиксом ' — это маркер «текст» в Sheets (сам апостроф не сохраняется).
- * Иначе Sheets «умно» превращает строки в формулы (=…), числа (-100123…, 1.50), даты (24.10.2026),
- * булевы (TRUE) — и данные портятся.
+ * Every string is written with a leading ' — the "text" marker in Sheets (the apostrophe itself isn't stored).
+ * Otherwise Sheets "helpfully" converts strings into formulas (=…), numbers (-100123…, 1.50), dates (24.10.2026)
+ * and booleans (TRUE), corrupting the data.
  */
 function cell_(v) {
   if (v === undefined || v === null) return '';
@@ -70,12 +70,12 @@ function readAll_(key) {
       sh.getRange(2, 1, last - 1, def.headers.length).getValues().forEach(function (r, i) {
         const o = { _row: i + 2 };
         def.headers.forEach(function (h, j) { o[h] = r[j]; });
-        if (o[def.key] !== '' && o[def.key] !== null) rows.push(o); // пустые/ручные строки пропускаем
+        if (o[def.key] !== '' && o[def.key] !== null) rows.push(o); // skip blank / manually inserted rows
       });
     }
     _rowsCache[key] = rows;
   }
-  // копии, чтобы вызывающий код мог мутировать объекты, не портя кэш
+  // return copies so callers can mutate objects without corrupting the cache
   return _rowsCache[key].map(function (o) { return Object.assign({}, o); });
 }
 
@@ -94,13 +94,13 @@ function appendRows_(key, objs) {
 }
 
 function updateRow_(key, obj) {
-  if (!obj._row) throw new Error('updateRow_: нет _row');
+  if (!obj._row) throw new Error('updateRow_: missing _row');
   const row = toRow_(key, obj);
   sheet_(key).getRange(obj._row, 1, 1, row.length).setValues([row]);
   dropCache_(key);
 }
 
-/** Удаление строк: соседние строки удаляются одним вызовом deleteRows (снизу вверх). */
+/** Deletes rows: adjacent rows are removed with a single deleteRows call (bottom-up). */
 function deleteRows_(key, objs) {
   if (!objs.length) return;
   const sh = sheet_(key);
@@ -115,12 +115,12 @@ function deleteRows_(key, objs) {
   dropCache_(key);
 }
 
-/** Все изменения данных — под script lock, чтобы вебхук и планировщик не мешали друг другу. */
+/** All data changes run under the script lock so the webhook and scheduler don't interfere. */
 function withLock_(fn) {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(30000)) throw new UserError('Бот занят (идёт рассылка). Повторите через минуту.');
+  if (!lock.tryLock(30000)) throw new UserError('The bot is busy (sending posts). Try again in a minute.');
   try {
-    // другое выполнение могло изменить таблицу, пока мы ждали блокировку
+    // another execution may have changed the sheet while we waited for the lock
     Object.keys(_rowsCache).forEach(dropCache_);
     return fn();
   } finally { lock.releaseLock(); }
@@ -137,7 +137,7 @@ function findList_(name) {
 
 function requireList_(name) {
   const l = findList_(name);
-  if (!l) throw new UserError('Списка «' + esc_(name) + '» нет. Создайте: <code>/addlist ' + esc_(name) + '</code>');
+  if (!l) throw new UserError('List "' + esc_(name) + '" does not exist. Create it: <code>/addlist ' + esc_(name) + '</code>');
   return l;
 }
 
@@ -146,14 +146,14 @@ function chatsInList_(name) {
   return readAll_('chats').filter(function (c) { return lc_(c.list_name) === n; });
 }
 
-/** Совпадение строки чата с тем, что ввёл пользователь: числовой ID или @username. */
+/** Does a chat row match the user's input: numeric ID or @username. */
 function chatMatches_(row, ref) {
   ref = String(ref).trim();
   if (String(row.chat_id) === ref) return true;
   return ref.charAt(0) === '@' && !!row.username && lc_('@' + row.username) === lc_(ref);
 }
 
-/** Чат превратился в супергруппу — обновляем ID везде (кроме переданных in-memory задач, их правит вызывающий). */
+/** A group was upgraded to a supergroup — update the ID everywhere (in-memory jobs are updated by the caller). */
 function migrateChatId_(oldId, newId) {
   readAll_('chats').forEach(function (c) {
     if (String(c.chat_id) === String(oldId)) { c.chat_id = String(newId); c.type = 'supergroup'; updateRow_('chats', c); }
@@ -178,7 +178,7 @@ function toMs_(v) {
   return isNaN(n) ? null : n;
 }
 
-/** Строка листа → объект задачи с удобными полями *_ms. */
+/** Sheet row → job object with convenient *_ms fields. */
 function hydrateJob_(j) {
   j.job_id = Number(j.job_id);
   j.runs = Number(j.runs) || 0;
@@ -204,9 +204,9 @@ function saveJob_(j) {
 
 function findJob_(idArg) {
   const id = Number(String(idArg || '').replace(/^#/, '').trim());
-  if (!id) throw new UserError('Укажите номер задачи, например <code>/stopjob 12</code>');
+  if (!id) throw new UserError('Specify a job number, e.g. <code>/stopjob 12</code>');
   const job = readJobs_().filter(function (j) { return j.job_id === id; })[0];
-  if (!job) throw new UserError('Задача #' + id + ' не найдена');
+  if (!job) throw new UserError('Job #' + id + ' not found');
   return job;
 }
 

@@ -1,121 +1,133 @@
-# Telegram Autopost Bot — Google Apps Script + Google Sheets
+# Telegram Autopost Bot
 
-**Версия: 1.0.0** · [CHANGELOG](CHANGELOG.md)
+**Version 1.0.0** · [Changelog](CHANGELOG.md)
 
-Бот для публикации постов по расписанию в списки Telegram-каналов и групп. **Сервер не нужен**: код работает на бесплатном Google Apps Script, а данные (списки, чаты, заготовки постов, журнал публикаций с `message_id`) хранятся в Google-таблице.
+A Telegram bot that publishes scheduled posts to lists of channels and groups. **No server required**: it runs on free Google Apps Script, and all data (lists, chats, post templates, and a delivery log with `message_id`s) lives in a Google Sheet.
 
-## Архитектура
+## Architecture
 
 ```
 Telegram ──webhook──▶ doPost()  (Apps Script Web App)
-                        └─ handleUpdate_ → команды → Google Sheets (Lists / Chats / Jobs)
-Time trigger (1 мин) ─▶ tick()
-                        ├─ NEXT_DUE ещё не наступил? → выход за миллисекунды, таблица не открывается
-                        └─ due-задачи → sendMessage/copyMessage (параллельно, fetchAll)
-                                       → лист Log (message_id, ссылка, ошибки)
+                        └─ handleUpdate_ → commands → Google Sheets (Lists / Chats / Jobs)
+Time trigger (1 min) ─▶ tick()
+                        ├─ NEXT_DUE not reached? → exit in milliseconds, sheet untouched
+                        └─ due jobs → sendMessage/copyMessage (parallel, fetchAll)
+                                    → Log sheet (message_id, link, errors)
 ```
 
-| Лист    | Что хранит |
-|---------|-----------|
-| `Lists` | списки |
-| `Chats` | связи «список ↔ чат» (id, название, тип, @username); один чат может входить в несколько списков |
-| `Jobs`  | заготовки/расписания: текст + форматирование, цель, старт, интервал, конец, mix, следующий запуск, статус |
-| `Log`   | каждая отправка: время, задача, чат, **message_id**, ссылка на пост, статус/ошибка |
+| Sheet   | Contents |
+|---------|----------|
+| `Lists` | lists |
+| `Chats` | list ↔ chat links (ID, title, type, @username); one chat can be in several lists |
+| `Jobs`  | post templates and schedules: text + formatting, target, start, interval, end, mix, next run, status |
+| `Log`   | every delivery: time, job, chat, **message_id**, post link, status/error |
 
-Файлы: `Config.gs` (настройки), `Telegram.gs` (Bot API, проверка прав), `Storage.gs` (Sheets), `Parser.gs` (разбор команд и расписания), `Scheduler.gs` (рассылка), `Commands.gs` (команды), `Main.gs` (вебхук и установка).
+Files: `Config.gs` (settings), `Telegram.gs` (Bot API, permission checks), `Storage.gs` (Sheets), `Parser.gs` (command & schedule parsing), `Scheduler.gs` (delivery), `Commands.gs` (commands), `Main.gs` (webhook & setup).
 
-### Технические решения
-- **Сдвиг расписания до отправки (at-most-once).** Если Google прервёт выполнение посреди рассылки, пост не продублируется во всех чатах при следующем запуске.
-- **Пропущенные слоты не досылаются пачкой.** Если триггер задержался или задача стояла на паузе, бот публикует в ближайший будущий слот.
-- **Экономия квоты.** Время ближайшего запуска хранится в Script Properties, поэтому ежеминутный `tick()` почти ничего не стоит.
-- **Лимиты Telegram.** Отправка пачками по 20 с паузой ~1 с. На ответ `429` бот ждёт `retry_after` и повторяет.
-- **Группа стала супергруппой** (`migrate_to_chat_id`): бот сам обновляет ID в списках и переотправляет пост.
-- **Защита вебхука:** секрет в URL, дедупликация `update_id`, команды принимаются только в личке и только от `ADMIN_IDS`.
-- **Форматирование сохраняется** (жирный, ссылки, спойлеры и т.д.): бот переносит `entities` из вашего сообщения. Фото, видео и документы публикуются через `copyMessage`.
-- **Таблица не портит данные:** каждая строка пишется как текст, поэтому `=SUM(...)`, `-100123…`, `24.10.2026`, `TRUE` и `1.50` не превращаются в формулы, числа и даты.
-- **Меньше обращений к таблице:** в рамках одной команды или запуска планировщика каждый лист читается один раз. Соседние строки удаляются одним вызовом.
-- **Проверка прав пачкой:** `/addchat` и `/checkchats` проверяют все чаты параллельно, 50 чатов за ~2–3 с вместо ~40 с. Так вебхук не упирается в таймаут.
-- **Ручные правки таблицы безопасны:** пустые строки пропускаются, кэша между запусками нет.
+### Tech stack
 
-## Нужен ли бот в чате и какие права нужны
+| Component | Role | Why |
+|-----------|------|-----|
+| Google Apps Script (V8 JavaScript) | runtime | free Google-hosted cloud runtime: no server, VPS, or bills |
+| Web App + webhook | receives commands | Telegram pushes updates to the script, so replies are instant |
+| Time-driven trigger | scheduler | built-in, no external cron |
+| Google Sheets | storage & log | human-readable and editable, free, zero setup |
+| Raw Telegram Bot API | messaging | bot frameworks don't run in Apps Script; raw calls give full control over limits, retries, and parallel sends |
+| Script Properties | secrets | the token never lives in code or in the sheet |
 
-Без членства бот публиковать **не может**: Bot API не даёт писать в чаты, где бота нет. Поэтому `/addchat` и `/post -chat` проверяют это сразу (`getChat` + `getChatMember`) и выдают понятную ошибку.
+### Design decisions
+- **At-most-once delivery:** the schedule is advanced before sending, so if Google kills the execution mid-run, posts are not duplicated across chats.
+- **Missed slots are skipped, not burst-sent:** after a delayed trigger or a pause, the bot posts at the next future slot.
+- **Quota-friendly:** the next due time is cached in Script Properties, so the per-minute `tick()` costs almost nothing.
+- **Telegram rate limits:** sends in batches of 20 with ~1 s pauses. On `429`, the bot waits for `retry_after` and retries.
+- **Group upgraded to supergroup** (`migrate_to_chat_id`): the bot updates the ID in all lists and resends.
+- **Webhook security:** secret in the URL, `update_id` deduplication, commands accepted only in private chat from `ADMIN_IDS`.
+- **Formatting preserved** (bold, links, spoilers, etc.) by carrying over message `entities`. Photos, videos and documents are posted via `copyMessage`.
+- **Sheet-safe writes:** every string is stored as text, so `=SUM(...)`, `-100123…`, `24.10.2026`, `TRUE` and `1.50` never turn into formulas, numbers or dates.
+- **Fewer sheet reads:** each sheet is read once per command or scheduler run. Adjacent rows are deleted in a single call.
+- **Batched permission checks:** `/addchat` and `/checkchats` check all chats in parallel, so 50 chats take ~2–3 s instead of ~40 s and the webhook never times out.
+- **Manual sheet edits are safe:** blank rows are skipped, and there's no cache between runs.
 
-| Тип чата | Минимум |
-|----------|---------|
-| **Канал** | бот — **администратор** с одним правом **«Публикация сообщений»** (Post messages). Остальные права можно выключить. |
-| **Группа / супергруппа** | достаточно быть **обычным участником**, если участникам разрешено писать. Если писать запрещено, нужен админ (любые права, даже без единой галочки). |
+## Does the bot need to be in the chat? Which rights?
 
-Предупреждения (не блокируют добавление):
-- **медленный режим** действует на бота, если тот не админ, поэтому для частых постов лучше дать боту админку;
-- если участникам запрещены медиа, посты с фото не пройдут;
-- Telegram ограничивает отправку: около 20 сообщений в минуту в одну группу и около 30 в секунду в сумме.
+Yes. The Bot API **does not allow** posting to chats the bot isn't in. `/addchat` and `/post -chat` therefore check this upfront (`getChat` + `getChatMember`) and explain any problem.
 
-Права могут измениться после добавления (бота удалили, сняли админку). Тогда при очередной публикации бот один раз напишет вам, в каких чатах и почему пост не прошёл. Полная проверка — `/checkchats`.
+| Chat type | Minimum |
+|-----------|---------|
+| **Channel** | bot is an **administrator** with just the **"Post messages"** right. Everything else can be off. |
+| **Group / supergroup** | a **regular member** is enough if members may send messages. Otherwise the bot needs admin status, even with no rights ticked. |
 
-**Как узнать ID чата:** добавьте бота в канал или группу, и он сам пришлёт вам в личку ID, статус и готовую команду `/addchat`. Также можно указывать `@username` или ссылку `t.me/...`.
+Warnings (they don't block adding):
+- **Slow mode** applies to a non-admin bot, so make it an admin for frequent posting.
+- If members can't send media, photo posts will fail.
+- Telegram limits sending to about 20 messages per minute per group and about 30 per second overall.
 
-## Команды
+Rights can change later (the bot is removed or demoted). The bot then tells you once which chats failed and why. Run `/checkchats` for a full check.
+
+**Finding a chat ID:** add the bot to the channel or group, and it will DM you the ID, its status and a ready-made `/addchat` command. You can also use `@username` or a `t.me/...` link.
+
+## Commands
 
 ```
-/addlist news                         — создать список
-/removelist news                      — удалить список, его чаты; задачи списка останавливаются
-/lists, /showlist news                — просмотр
-/addchat -1001234567890 news          — добавить чат (можно несколько id через пробел)
-/removechat -1001234567890 news       — убрать из списка
-/removechat -1001234567890            — убрать из всех списков
-/checkchats [news]                    — перепроверить права бота
+/addlist news                         — create a list
+/removelist news                      — delete a list and its chats; its jobs are stopped
+/lists, /showlist news                — view lists
+/addchat -1001234567890 news          — add a chat (several IDs separated by spaces allowed)
+/removechat -1001234567890 news       — remove from one list
+/removechat -1001234567890            — remove from all lists
+/checkchats [news]                    — re-check the bot's permissions
 
 /post hello hello -list news -start 24.10.2026 14:00 -regularity 2h -end 26.11.2026 12:00
 /post hi, andrew -list news -start 24.10.2026 14:00 -mix 0.75h in 2
 /post hi, andrew -chat -1001234567890 -start 24.10.2026 14:00 -regularity 2h -end 26.11.2026 12:00
 
 /jobs, /pausejob 3, /resumejob 3, /stopjob 3
-/version                              — версия бота
+/version                              — bot version
+/help                                 — help
 ```
 
-Правила `/post`:
-- текст — всё до первого флага; можно в несколько строк и с форматированием;
-- без `-start` или `-start now` — публикация сразу (в течение минуты);
-- без `-regularity`/`-mix` — разовый пост;
-- `-end` — включительно (последняя публикация не позже этой даты);
-- `-mix X in N`: первая публикация во все чаты, дальше каждые X в N случайных чатов (если чатов ≤ N, то во все); без `-end` работает без остановки;
-- интервалы: `2h`, `0.75h`, `45m`, `1d` (минимум 5 мин, настраивается в `CFG.MIN_INTERVAL_MIN`);
-- дата в формате `24.10.2026 14:00`, часовой пояс Europe/Kiev (меняется в `appsscript.json`);
-- **медиа:** отправьте фото/видео с подписью `/post текст подписи -list news -start ...` или ответьте командой `/post -list news ...` на любое сообщение. Бот скопирует его как есть, поэтому исходное сообщение в личке удалять нельзя;
-- состав списка берётся в момент каждой публикации: добавленные позже чаты тоже будут получать пост;
-- флаги понимают и «—» (iOS автоматически превращает `--` в длинное тире).
+`/post` rules:
+- The text is everything before the first flag. It may span multiple lines and include formatting.
+- No `-start` (or `-start now`) means the post goes out now, within a minute.
+- No `-regularity` or `-mix` means a one-time post.
+- `-end` is inclusive: the last post is no later than that time.
+- `-mix X in N`: the first post goes to all chats, then every X to N random chats (all chats if there are ≤ N). Without `-end` it runs indefinitely.
+- Intervals: `2h`, `0.75h`, `45m`, `1d`. The minimum is 5 min (`CFG.MIN_INTERVAL_MIN`).
+- Dates use the format `24.10.2026 14:00` in the script time zone (`Europe/Kiev`, set in `appsscript.json`).
+- **Media:** send a photo or video with the caption `/post caption text -list news -start ...`, or reply `/post -list news ...` to any message. The bot copies it as is, so don't delete the original message.
+- List membership is resolved at each post, so chats added later receive posts too.
+- Flags also accept "—", because iOS auto-replaces `--` with an em dash.
 
-## Установка (≈10 минут)
+## Setup (~10 minutes)
 
-1. **Бот.** В @BotFather выполните `/newbot` и скопируйте токен.
-2. **Таблица.** Создайте новую Google-таблицу, затем откройте **Расширения → Apps Script**.
-3. **Код.** Создайте файлы `Config`, `Telegram`, `Storage`, `Parser`, `Scheduler`, `Commands`, `Main` (тип «Скрипт») и вставьте содержимое соответствующих `.gs` файлов. В **Project Settings** включите *Show "appsscript.json"* и замените его содержимое на файл из архива.
-   *Можно через [clasp](https://github.com/google/clasp): `clasp create --type sheets`, затем `clasp push`.*
-4. **Секреты.** В **Project Settings → Script properties** добавьте:
-   - `BOT_TOKEN` — токен бота;
-   - `ADMIN_IDS` — ваш Telegram ID. Его можно узнать у @userinfobot, или напишите боту `/start` после установки, и он ответит вашим ID.
-5. **setup.** В редакторе выберите функцию `setup` и нажмите **Run**, затем подтвердите доступы Google.
-6. **Деплой.** Нажмите **Deploy → New deployment → Web app**:
+1. **Bot.** In @BotFather run `/newbot` and copy the token.
+2. **Sheet.** Create a new Google Sheet, then open **Extensions → Apps Script**.
+3. **Code.** Create the script files `Config`, `Telegram`, `Storage`, `Parser`, `Scheduler`, `Commands` and `Main`, and paste in the matching `.gs` files. In **Project Settings** enable *Show "appsscript.json"* and replace its contents with the file from this repo.
+   *Or use [clasp](https://github.com/google/clasp): `clasp create --type sheets`, then `clasp push`.*
+4. **Secrets.** In **Project Settings → Script properties** add:
+   - `BOT_TOKEN` — the bot token;
+   - `ADMIN_IDS` — your Telegram ID. Get it from @userinfobot, or send `/start` to the bot after setup and it will reply with your ID.
+5. **setup.** Select the `setup` function, click **Run**, and grant the Google permissions.
+6. **Deploy.** Click **Deploy → New deployment → Web app**:
    - *Execute as:* **Me**;
-   - *Who has access:* **Anyone** (не «Anyone with Google account», иначе Telegram не достучится).
+   - *Who has access:* **Anyone** (not "Anyone with Google account", or Telegram can't reach it).
 
-   Скопируйте URL вида `…/exec` и сохраните его в Script property `WEBAPP_URL`.
-7. **setWebhook.** Запустите `setWebhook`: функция подключит вебхук и создаст ежеминутный триггер.
-8. Напишите боту `/help`.
+   Copy the `…/exec` URL and save it as the `WEBAPP_URL` script property.
+7. **setWebhook.** Run `setWebhook`. It connects the webhook and creates the per-minute trigger.
+8. Send `/help` to the bot.
 
-**Обновление кода:** откройте Deploy → Manage deployments → ✏️ → Version: *New version*. URL при этом не меняется, вебхук переустанавливать не нужно.
+**Updating the code:** go to Deploy → Manage deployments → ✏️ → Version: *New version*. The URL stays the same, so the webhook doesn't need resetting.
 
-**Диагностика:** функция `webhookInfo()` выводит `last_error_message` и очередь апдейтов. Если там постоянные ошибки (например, `302`), переключитесь на `usePolling()`. В этом режиме веб-приложение не нужно, а команды обрабатываются раз в минуту.
+**Diagnostics:** `webhookInfo()` shows `last_error_message` and the pending update count. If you see persistent errors (e.g. `302`), switch to `usePolling()`. That mode needs no web app, and commands are processed once a minute.
 
-## Ограничения бесплатного Apps Script
-- Точность расписания ±1 минута: триггер срабатывает раз в минуту в случайную секунду, поэтому пост может уйти до 30 с раньше.
-- Время работы триггеров — 90 мин/сутки (на Workspace-аккаунте 6 ч), запросов к внешним сервисам — 20 000/сутки. Ежеминутный холостой `tick()` занимает доли секунды, так что запаса хватает на сотни публикаций в день.
-- Интервал считается в абсолютном времени. После перехода на зимнее время (25.10.2026) «каждые 1d» сместится на час по часам.
-- Из альбома (нескольких фото одним сообщением) копируется только то сообщение, на которое вы ответили.
+## Free Apps Script limits
+- Schedule accuracy is ±1 minute: the trigger fires once a minute at a random second, so a post may go out up to 30 s early.
+- Trigger runtime is 90 min/day (6 h on Workspace accounts), and external requests are capped at 20,000/day. An idle `tick()` takes a fraction of a second, which leaves room for hundreds of posts per day.
+- Intervals are absolute time. After a DST switch, "every 1d" shifts by an hour in local time.
+- For albums, only the message you replied to is copied.
 
-## Версия
-Номер версии задаётся в `Config.gs` (`VERSION`) и показывается командой `/version`. При выпуске новой версии обновите `VERSION`, `RELEASE_DATE` и `CHANGELOG.md`, затем поставьте git-тег.
+## Versioning
+The version is set in `Config.gs` (`VERSION`, `RELEASE_DATE`) and shown by `/version`. For a new release, bump `VERSION`, `RELEASE_DATE` and `CHANGELOG.md`, then create a git tag.
 
-## Тесты
-В `tests/` лежит Node-харнесс с моками Apps Script и Telegram. Запуск: `node tests/test.js`. Тесты проходят все примеры из ТЗ, mix, ошибки прав, миграцию группы, паузу/возобновление и дедупликацию апдейтов.
+## Tests
+`tests/` contains a Node harness with Apps Script and Telegram mocks. Run `node tests/test.js`. The tests cover every spec example, mix mode, permission errors, group migration, pause/resume, update deduplication, and the regressions above.

@@ -17,7 +17,7 @@ const env0 = makeEnv({ tg: { chats: chats() } });
 const P = env0.ctx;
 t('duration', () => {
   assert.equal(P.parseDuration_('2h'), 120); assert.equal(P.parseDuration_('0.75h'), 45);
-  assert.equal(P.parseDuration_('45m'), 45); assert.equal(P.parseDuration_('1d'), 1440); assert.equal(P.parseDuration_('1,5ч'), 90);
+  assert.equal(P.parseDuration_('45m'), 45); assert.equal(P.parseDuration_('1d'), 1440); assert.equal(P.parseDuration_('1,5h'), 90);
   assert.throws(() => P.parseDuration_('2m')); assert.throws(() => P.parseDuration_('abc'));
 });
 t('date', () => {
@@ -46,12 +46,12 @@ t('multiline + entities shift', () => {
 });
 t('validation errors', () => {
   const n = env0.now();
-  assert.throws(() => P.parsePostArgs_('/post hi', [], n, 'x'), /куда постить/);
+  assert.throws(() => P.parsePostArgs_('/post hi', [], n, 'x'), /where to post/);
   assert.throws(() => P.parsePostArgs_('/post hi -list a -chat 1', [], n, 'x'));
-  assert.throws(() => P.parsePostArgs_('/post hi -list a -start 01.01.2020 10:00', [], n, 'x'), /прошло/);
+  assert.throws(() => P.parsePostArgs_('/post hi -list a -start 01.01.2020 10:00', [], n, 'x'), /in the past/);
   assert.throws(() => P.parsePostArgs_('/post hi -list a -end 01.01.2030 10:00', [], n, 'x'), /-end/);
   assert.throws(() => P.parsePostArgs_('/post hi -chat 1 -mix 1h in 2', [], n, 'x'));
-  assert.throws(() => P.parsePostArgs_('/post hi -list a -list b', [], n, 'x'), /дважды/);
+  assert.throws(() => P.parsePostArgs_('/post hi -list a -list b', [], n, 'x'), /twice/);
 });
 t('computeNextRun skips missed slots, end inclusive', () => {
   assert.equal(P.computeNextRun_(0, 60, null, 10 * MIN), HOUR);
@@ -64,27 +64,27 @@ t('computeNextRun skips missed slots, end inclusive', () => {
 // ---------- end-to-end ----------
 t('lists & chats commands', () => {
   const e = makeEnv({ tg: { chats: chats() } });
-  assert.match(e.cmd('/addchat -1001 news'), /Списка «news» нет/);
-  assert.match(e.cmd('/addlist news'), /создан/);
-  assert.match(e.cmd('/addlist NEWS'), /уже существует/);
+  assert.match(e.cmd('/addchat -1001 news'), /List "news" does not exist/);
+  assert.match(e.cmd('/addlist news'), /created/);
+  assert.match(e.cmd('/addlist NEWS'), /already exists/);
   const r = e.cmd('/addchat -1001 -1002 -1003 -1005 @newsa news');
-  assert.match(r, /✅ News A/); assert.match(r, /✅ Group B/); assert.match(r, /Публикация сообщений/); assert.match(r, /не состоит/); assert.match(r, /уже в списке/);
+  assert.match(r, /✅ News A/); assert.match(r, /✅ Group B/); assert.match(r, /Post messages/); assert.match(r, /not a member/); assert.match(r, /already in the list/);
   assert.equal(D(e.sheets.Chats).length, 2);
-  assert.equal(D(e.sheets.Chats)[0][1], '-1001'); // id остаётся строкой
+  assert.equal(D(e.sheets.Chats)[0][1], '-1001'); // ID stays a string
   e.cmd('/addlist other'); e.cmd('/addchat -1001 other');
-  assert.match(e.cmd('/removechat -1001 other'), /удалён из: other/);
+  assert.match(e.cmd('/removechat -1001 other'), /removed from: other/);
   e.cmd('/addchat -1001 other');
   assert.match(e.cmd('/removechat @newsa'), /news, other/);
   assert.equal(D(e.sheets.Chats).length, 1);
-  assert.match(e.cmd('/lists'), /news<\/b> — чатов: 1/);
-  assert.match(e.cmd('/removelist news'), /Чатов убрано: 1/);
+  assert.match(e.cmd('/lists'), /news<\/b> — chats: 1/);
+  assert.match(e.cmd('/removelist news'), /Chats removed: 1/);
   assert.equal(D(e.sheets.Chats).length, 0);
 });
 
 t('non-admin rejected', () => {
   const e = makeEnv({ tg: { chats: chats() } });
   e.ctx.doPost({ parameter: {}, postData: { contents: JSON.stringify({ update_id: 9, message: { message_id: 1, chat: { id: 7, type: 'private' }, from: { id: 7 }, text: '/addlist x' } }) } });
-  assert.match(e.sent[0].text, /Нет доступа[\s\S]*7/); assert.ok(!e.sheets.Lists);
+  assert.match(e.sent[0].text, /Access denied[\s\S]*7/); assert.ok(!e.sheets.Lists);
 });
 
 t('duplicate update ignored', () => {
@@ -98,7 +98,7 @@ t('regular job: example 1 schedule and end', () => {
   const e = makeEnv({ tg: { chats: chats() } });
   e.cmd('/addlist news'); e.cmd('/addchat -1001 -1002 news');
   const r = e.cmd('/post hello hello -list news -start 24.10.2026 14:00 -regularity 2h -end 24.10.2026 18:00');
-  assert.match(r, /Задача #1/); assert.match(r, /Всего публикаций: 3/);
+  assert.match(r, /Job #1/); assert.match(r, /Total posts: 3/);
   assert.equal(e.tick().length, 0);
   e.setNow(Date.UTC(2026, 9, 24, 11, 0) - 20e3); // 13:59:40
   let s = e.tick(); assert.equal(s.filter(x => x.text === 'hello hello').length, 2);
@@ -123,7 +123,7 @@ t('mix job: first all, then random N', () => {
 t('chat job + errors notify once + migration', () => {
   const tg = { chats: chats(), migrate: {} };
   const e = makeEnv({ tg });
-  assert.match(e.cmd('/post x -chat -1003 -start now'), /Публикация сообщений/);
+  assert.match(e.cmd('/post x -chat -1003 -start now'), /Post messages/);
   e.cmd('/addlist l'); e.cmd('/addchat -1001 -1002 l');
   e.cmd('/post hey -list l -start now -regularity 1h');
   tg.chats['-1001'].kicked = true; tg.migrate['-1002'] = -1009;
@@ -139,11 +139,11 @@ t('chat job + errors notify once + migration', () => {
 t('media caption copy & reply copy & jobs control', () => {
   const e = makeEnv({ tg: { chats: chats() } });
   e.cmd('/addlist l'); e.cmd('/addchat -1001 l');
-  e.cmd(undefined, { caption: '/post <b>Фото</b> -list l -start now', caption_entities: [], photo: [{}] });
+  e.cmd(undefined, { caption: '/post <b>Photo</b> -list l -start now', caption_entities: [], photo: [{}] });
   e.cmd('/post -list l -start now', { reply_to_message: { message_id: 77 } });
-  assert.match(e.cmd('/post text -list l', { reply_to_message: { message_id: 77 } }), /текст не нужен/);
+  assert.match(e.cmd('/post text -list l', { reply_to_message: { message_id: 77 } }), /no text is needed/);
   e.advance(5e3); const s = e.tick();
-  assert.equal(s[0].method, 'copyMessage'); assert.equal(s[0].caption, '<b>Фото</b>');
+  assert.equal(s[0].method, 'copyMessage'); assert.equal(s[0].caption, '<b>Photo</b>');
   assert.equal(s[1].method, 'copyMessage'); assert.equal(s[1].message_id, 77); assert.equal(s[1].caption, undefined);
   e.cmd('/post r -list l -start now -regularity 1h'); e.advance(5e3); e.tick();
   assert.match(e.cmd('/jobs'), /#3/);
@@ -152,14 +152,14 @@ t('media caption copy & reply copy & jobs control', () => {
   assert.match(e.cmd('/resumejob 3'), /▶️/);
   e.advance(HOUR); assert.equal(e.tick().length, 1);
   assert.match(e.cmd('/stopjob 3'), /⏹/); e.advance(HOUR); assert.equal(e.tick().length, 0);
-  assert.match(e.cmd('/stopjob 99'), /не найдена/);
+  assert.match(e.cmd('/stopjob 99'), /not found/);
 });
 
 t('removelist stops its jobs; formula-like text safe', () => {
   const e = makeEnv({ tg: { chats: chats() } });
   e.cmd('/addlist l'); e.cmd('/addchat -1001 l');
   e.cmd('/post =SUM(A1) -list l -start now -regularity 1h');
-  assert.match(e.cmd('/removelist l'), /задач остановлено: 1/);
+  assert.match(e.cmd('/removelist l'), /jobs stopped: 1/);
   e.advance(HOUR); assert.equal(e.tick().length, 0);
   assert.equal(JSON.parse(D(e.sheets.Jobs)[0][7]).text, '=SUM(A1)');
 });
@@ -167,36 +167,36 @@ t('removelist stops its jobs; formula-like text safe', () => {
 t('my_chat_member notification', () => {
   const e = makeEnv({ tg: { chats: chats() } });
   e.ctx.doPost({ parameter: {}, postData: { contents: JSON.stringify({ update_id: 1, my_chat_member: { chat: { id: -1007, type: 'channel', title: 'New' }, from: { id: 42 }, new_chat_member: { status: 'administrator', can_post_messages: true } } }) } });
-  assert.match(e.sent[0].text, /-1007[\s\S]*да ✅[\s\S]*\/addchat -1007/);
+  assert.match(e.sent[0].text, /-1007[\s\S]*yes ✅[\s\S]*\/addchat -1007/);
 });
 
 
-// ---------- регрессия после рефакторинга ----------
-t('cell_: все строки фиксируются как текст', () => {
+// ---------- regressions after refactoring ----------
+t('cell_: every string is stored as text', () => {
   ['24.10.2026', 'TRUE', '1.50', '-1001', '=A1', 'Jan 5'].forEach(v => assert.equal(P.cell_(v), "'" + v));
   assert.equal(P.cell_(''), ''); assert.equal(P.cell_(5), 5);
 });
-t('пустые строки в листе игнорируются', () => {
+t('blank sheet rows are ignored', () => {
   const e = makeEnv({ tg: { chats: chats() } });
   e.cmd('/addlist l'); e.cmd('/addchat -1001 l');
   e.sheets.Chats.rows.push(['', '', '', '', '', '']);
   e.cmd('/post x -list l -start now'); e.advance(5e3);
   assert.equal(e.tick().length, 1);
 });
-t('удаление соседних строк одним вызовом', () => {
+t('adjacent rows deleted in one call', () => {
   const e = makeEnv({ tg: { chats: chats() } });
   e.cmd('/addlist l'); e.cmd('/addchat -1001 -1002 -1004 l');
   e.ctx.__deleteCalls = 0; e.cmd('/removelist l');
-  assert.equal(e.ctx.__deleteCalls, 2); // 1 — три чата, 1 — сам список
+  assert.equal(e.ctx.__deleteCalls, 2); // 1 for three chats, 1 for the list itself
 });
-t('проверка прав пачкой (fetchAll), а не по одному', () => {
+t('permission check is batched (fetchAll), not one by one', () => {
   const e = makeEnv({ tg: { chats: chats() } });
   e.cmd('/addlist l'); e.cmd('/addchat -1001 -1002 -1004 l');
   e.ctx.__fetchAll = 0; e.ctx.__fetch = 0;
-  assert.match(e.cmd('/checkchats l'), /3\/3 ок/);
+  assert.match(e.cmd('/checkchats l'), /3\/3 OK/);
   assert.equal(e.ctx.__fetchAll, 2); assert.equal(e.ctx.__fetch, 1); // getChat×3, getChatMember×3, reply
 });
-t('миграция: ID в задаче -chat не откатывается', () => {
+t('migration: -chat job ID is not reverted', () => {
   const tg = { chats: chats(), migrate: {} };
   const e = makeEnv({ tg });
   e.cmd('/post y -chat -1002 -start now -regularity 1h');
@@ -205,17 +205,17 @@ t('миграция: ID в задаче -chat не откатывается', ()
   delete tg.migrate['-1002']; e.advance(HOUR);
   assert.equal(e.tick()[0].chat_id, '-1009');
 });
-t('splitMessage_ режет длинные строки', () => {
+t('splitMessage_ cuts long lines', () => {
   const parts = P.splitMessage_('a\n' + 'x'.repeat(9000) + '\nb');
   assert.ok(parts.every(p => p.length <= 4000)); assert.equal(parts.join('').replace(/\n/g, '').length, 9002);
 });
-t('разовый пост: итог доставки в уведомлении', () => {
+t('one-time post: delivery summary in notification', () => {
   const e = makeEnv({ tg: { chats: chats() } });
   e.cmd('/addlist l'); e.cmd('/addchat -1001 -1002 l');
   e.cmd('/post z -list l'); e.advance(5e3);
   const adm = e.tickAll().filter(x => String(x.chat_id) === '42');
-  assert.match(adm[0].text, /доставлено 2 из 2/);
+  assert.match(adm[0].text, /delivered 2 of 2/);
 });
-t('нет внутренних ошибок', () => { assert.deepEqual(env0.ctx.__errors, []); });
+t('no internal errors', () => { assert.deepEqual(env0.ctx.__errors, []); });
 t('/version', () => { const e = makeEnv({ tg: { chats: chats() } }); assert.match(e.cmd('/version'), /v1\.0\.0/); });
 console.log(`\n${pass} passed`);

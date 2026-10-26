@@ -1,6 +1,6 @@
 /**
- * ============================== КОМАНДЫ ==============================
- * Бот принимает команды только в личке и только от ADMIN_IDS.
+ * ============================== COMMANDS ==============================
+ * The bot accepts commands only in private chat and only from ADMIN_IDS.
  */
 
 function getCommands_() {
@@ -20,23 +20,23 @@ function handleUpdate_(u) {
   if (!msg || !msg.chat || msg.chat.type !== 'private' || !msg.from) return;
 
   if (!isAdmin_(msg.from.id)) {
-    reply_(msg.chat.id, '⛔ Нет доступа.\nВаш Telegram ID: <code>' + msg.from.id + '</code>\n' +
-      'Владелец бота может добавить его в ADMIN_IDS.');
+    reply_(msg.chat.id, '⛔ Access denied.\nYour Telegram ID: <code>' + msg.from.id + '</code>\n' +
+      'The bot owner can add it to ADMIN_IDS.');
     return;
   }
 
   const text = msg.text || msg.caption || '';
   const cm = text.match(/^\/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?=\s|$)/);
-  if (!cm) { reply_(msg.chat.id, 'Я понимаю только команды. Список — /help'); return; }
+  if (!cm) { reply_(msg.chat.id, 'I only understand commands. See /help'); return; }
 
   const handler = getCommands_()[cm[1].toLowerCase()];
-  if (!handler) { reply_(msg.chat.id, 'Неизвестная команда. Список — /help'); return; }
+  if (!handler) { reply_(msg.chat.id, 'Unknown command. See /help'); return; }
 
   try {
     handler(msg, text.slice(cm[0].length).trim());
   } catch (e) {
     if (e instanceof UserError) reply_(msg.chat.id, '❌ ' + e.message);
-    else { console.error(e.stack); reply_(msg.chat.id, '⚠️ Внутренняя ошибка: ' + esc_(e.message)); }
+    else { console.error(e.stack); reply_(msg.chat.id, '⚠️ Internal error: ' + esc_(e.message)); }
   }
 }
 
@@ -44,40 +44,40 @@ function handleUpdate_(u) {
 
 function cmdHelp_(msg) {
   reply_(msg.chat.id, [
-    '<b>📋 Списки</b>',
-    '/addlist <i>name</i> — создать список',
-    '/removelist <i>name</i> — удалить список, его чаты и остановить его задачи',
-    '/lists — все списки',
-    '/showlist <i>name</i> — чаты в списке',
+    '<b>📋 Lists</b>',
+    '/addlist <i>name</i> — create a list',
+    '/removelist <i>name</i> — delete a list, its chats, and stop its jobs',
+    '/lists — all lists',
+    '/showlist <i>name</i> — chats in a list',
     '',
-    '<b>💬 Чаты</b>',
-    '/addchat <i>id [id2 …] name</i> — добавить чат(ы) в список',
-    '/removechat <i>id name</i> — убрать чат из списка',
-    '/removechat <i>id</i> — убрать чат из всех списков',
-    '/checkchats <i>[name]</i> — проверить права бота',
-    'ID: <code>-1001234567890</code>, <code>@channel</code> или ссылка t.me. Добавьте бота в канал/группу — он сам пришлёт ID.',
+    '<b>💬 Chats</b>',
+    '/addchat <i>id [id2 …] name</i> — add chat(s) to a list',
+    '/removechat <i>id name</i> — remove a chat from a list',
+    '/removechat <i>id</i> — remove a chat from all lists',
+    '/checkchats <i>[name]</i> — check the bot\'s permissions',
+    'ID: <code>-1001234567890</code>, <code>@channel</code> or a t.me link. Add the bot to a channel/group and it will send you the ID.',
     '',
-    '<b>📤 Публикации</b>',
+    '<b>📤 Posting</b>',
     '<code>/post hello hello -list news -start 24.10.2026 14:00 -regularity 2h -end 26.11.2026 12:00</code>',
     '<code>/post hi, andrew -list news -start 24.10.2026 14:00 -mix 0.75h in 2</code>',
     '<code>/post hi -chat -1001234567890 -start now -regularity 2h</code>',
-    '• без <code>-regularity</code>/<code>-mix</code> — разовый пост; без <code>-start</code> — сейчас',
-    '• <code>-mix X in N</code>: первый раз во все чаты, затем каждые X в N случайных',
-    '• форматирование текста (жирный, ссылки…) сохраняется',
-    '• фото/видео: отправьте медиа с подписью <code>/post текст -list …</code> или ответьте <code>/post -list …</code> на любое сообщение',
+    '• no <code>-regularity</code>/<code>-mix</code> — one-time post; no <code>-start</code> — now',
+    '• <code>-mix X in N</code>: first post to all chats, then every X to N random chats',
+    '• text formatting (bold, links…) is preserved',
+    '• photo/video: send media with the caption <code>/post text -list …</code> or reply <code>/post -list …</code> to any message',
     '',
-    '<b>⏱ Задачи</b>',
-    '/jobs — активные задачи',
+    '<b>⏱ Jobs</b>',
+    '/jobs — active jobs',
     '/pausejob <i>N</i>, /resumejob <i>N</i>, /stopjob <i>N</i>',
-    '/version — версия бота',
+    '/version — bot version',
     '',
-    'Часовой пояс: <code>' + esc_(tz_()) + '</code>. Журнал публикаций — в Google-таблице, лист Log.',
+    'Time zone: <code>' + esc_(tz_()) + '</code>. Post log: Google Sheet, "Log" tab.',
   ].join('\n'));
 }
 
 function cmdVersion_(msg) {
   reply_(msg.chat.id, '🤖 <b>Autopost Bot</b> v' + VERSION + ' (' + RELEASE_DATE + ')\n' +
-    'Режим: ' + esc_(prop_('MODE') || 'не настроен') + ' · часовой пояс: ' + esc_(tz_()));
+    'Mode: ' + esc_(prop_('MODE') || 'not configured') + ' · time zone: ' + esc_(tz_()));
 }
 
 // ------------------------------- lists -------------------------------
@@ -85,10 +85,10 @@ function cmdVersion_(msg) {
 function cmdAddList_(msg, args) {
   const name = validateListName_(args);
   withLock_(function () {
-    if (findList_(name)) throw new UserError('Список «' + esc_(name) + '» уже существует');
+    if (findList_(name)) throw new UserError('List "' + esc_(name) + '" already exists');
     appendRows_('lists', [{ list_name: name, created_at: new Date() }]);
   });
-  reply_(msg.chat.id, '✅ Список <b>' + esc_(name) + '</b> создан.\nДобавляйте чаты: <code>/addchat id ' + esc_(name) + '</code>');
+  reply_(msg.chat.id, '✅ List <b>' + esc_(name) + '</b> created.\nAdd chats: <code>/addchat id ' + esc_(name) + '</code>');
 }
 
 function cmdRemoveList_(msg, args) {
@@ -101,25 +101,25 @@ function cmdRemoveList_(msg, args) {
     let stopped = 0;
     readJobs_().forEach(function (j) {
       if (j.target_type === 'list' && lc_(j.target) === lc_(name) && isLive_(j)) {
-        j.status = 'stopped'; j.last_error = 'список удалён'; saveJob_(j); stopped++;
+        j.status = 'stopped'; j.last_error = 'list deleted'; saveJob_(j); stopped++;
       }
     });
     invalidateSchedule_();
     return { chats: chats.length, stopped: stopped };
   });
-  reply_(msg.chat.id, '🗑 Список <b>' + esc_(name) + '</b> удалён. Чатов убрано: ' + res.chats + ', задач остановлено: ' + res.stopped);
+  reply_(msg.chat.id, '🗑 List <b>' + esc_(name) + '</b> deleted. Chats removed: ' + res.chats + ', jobs stopped: ' + res.stopped);
 }
 
 function cmdLists_(msg) {
   const lists = readAll_('lists');
-  if (!lists.length) { reply_(msg.chat.id, 'Списков пока нет. Создайте: <code>/addlist name</code>'); return; }
+  if (!lists.length) { reply_(msg.chat.id, 'No lists yet. Create one: <code>/addlist name</code>'); return; }
   const chats = readAll_('chats');
   const jobs = readJobs_();
-  reply_(msg.chat.id, '<b>Списки:</b>\n' + lists.map(function (l) {
+  reply_(msg.chat.id, '<b>Lists:</b>\n' + lists.map(function (l) {
     const n = lc_(l.list_name);
     const c = chats.filter(function (x) { return lc_(x.list_name) === n; }).length;
     const j = jobs.filter(function (x) { return x.target_type === 'list' && lc_(x.target) === n && x.status === 'active'; }).length;
-    return '• <b>' + esc_(l.list_name) + '</b> — чатов: ' + c + ', активных задач: ' + j;
+    return '• <b>' + esc_(l.list_name) + '</b> — chats: ' + c + ', active jobs: ' + j;
   }).join('\n'));
 }
 
@@ -132,16 +132,16 @@ function cmdShowList_(msg, args) {
       return '• ' + esc_(c.title || '—') + ' · ' + chatTypeName_(c.type) + (c.username ? ' · @' + esc_(c.username) : '') +
         '\n   <code>' + c.chat_id + '</code>';
     }).join('\n')
-    : 'пусто — <code>/addchat id ' + esc_(name) + '</code>'));
+    : 'empty — <code>/addchat id ' + esc_(name) + '</code>'));
 }
 
 // ------------------------------- chats -------------------------------
 
 function cmdAddChat_(msg, args) {
   const tokens = args.split(/\s+/).filter(Boolean);
-  if (tokens.length < 2) throw new UserError('Формат: <code>/addchat id [id2 …] listname</code>');
+  if (tokens.length < 2) throw new UserError('Usage: <code>/addchat id [id2 …] listname</code>');
   const name = validateListName_(tokens.pop());
-  requireList_(name); // ошибка до запросов в Telegram
+  requireList_(name); // fail fast, before any Telegram requests
 
   const lines = [];
   const refs = [];
@@ -155,14 +155,14 @@ function cmdAddChat_(msg, args) {
   });
 
   const list = withLock_(function () {
-    const list = requireList_(name); // список могли удалить, пока шла проверка
+    const list = requireList_(name); // the list may have been deleted while we were checking
     const existing = chatsInList_(name);
     const rows = [];
     toAdd.forEach(function (a) {
       const c = a.chk.chat;
       const label = esc_(c.title || c.username || c.id) + ' <code>' + c.id + '</code>';
       const dup = existing.concat(rows).some(function (x) { return String(x.chat_id) === String(c.id); });
-      if (dup) { lines.push('ℹ️ ' + label + ' уже в списке'); return; }
+      if (dup) { lines.push('ℹ️ ' + label + ' is already in the list'); return; }
       rows.push({ list_name: list.list_name, chat_id: String(c.id), title: c.title || '', type: c.type, username: c.username || '', added_at: new Date() });
       lines.push('✅ ' + label + ' (' + chatTypeName_(c.type) + ')' +
         (a.chk.warnings.length ? '\n   ⚠️ ' + a.chk.warnings.join('; ') : ''));
@@ -175,7 +175,7 @@ function cmdAddChat_(msg, args) {
 
 function cmdRemoveChat_(msg, args) {
   const tokens = args.split(/\s+/).filter(Boolean);
-  if (tokens.length < 1 || tokens.length > 2) throw new UserError('Формат: <code>/removechat id [listname]</code>');
+  if (tokens.length < 1 || tokens.length > 2) throw new UserError('Usage: <code>/removechat id [listname]</code>');
   const ref = normalizeChatRef_(tokens[0]);
   const listName = tokens[1] ? validateListName_(tokens[1]) : null;
 
@@ -184,11 +184,11 @@ function cmdRemoveChat_(msg, args) {
     const rows = readAll_('chats').filter(function (c) {
       return chatMatches_(c, ref) && (!listName || lc_(c.list_name) === lc_(listName));
     });
-    if (!rows.length) throw new UserError('Чат <code>' + esc_(ref) + '</code> не найден' + (listName ? ' в списке «' + esc_(listName) + '»' : ' ни в одном списке'));
+    if (!rows.length) throw new UserError('Chat <code>' + esc_(ref) + '</code> not found' + (listName ? ' in list "' + esc_(listName) + '"' : ' in any list'));
     deleteRows_('chats', rows);
     return rows.map(function (r) { return r.list_name; });
   });
-  reply_(msg.chat.id, '🗑 Чат <code>' + esc_(ref) + '</code> удалён из: ' + removed.map(esc_).join(', '));
+  reply_(msg.chat.id, '🗑 Chat <code>' + esc_(ref) + '</code> removed from: ' + removed.map(esc_).join(', '));
 }
 
 function cmdCheckChats_(msg, args) {
@@ -201,7 +201,7 @@ function cmdCheckChats_(msg, args) {
   const uniq = {};
   rows.forEach(function (c) { (uniq[String(c.chat_id)] = uniq[String(c.chat_id)] || []).push(c); });
   const ids = Object.keys(uniq);
-  if (!ids.length) { reply_(msg.chat.id, 'Чатов нет'); return; }
+  if (!ids.length) { reply_(msg.chat.id, 'No chats'); return; }
 
   let ok = 0;
   const checks = checkChatsAccess_(ids);
@@ -215,31 +215,31 @@ function cmdCheckChats_(msg, args) {
     }
     return '❌ ' + title + ' <code>' + id + '</code> [' + esc_(lists) + ']\n   ' + chk.problems.join('; ');
   });
-  reply_(msg.chat.id, '<b>Проверка прав: ' + ok + '/' + ids.length + ' ок</b>\n' + lines.join('\n'));
+  reply_(msg.chat.id, '<b>Permission check: ' + ok + '/' + ids.length + ' OK</b>\n' + lines.join('\n'));
 }
 
-/** Бота добавили/удалили/поменяли права — сообщаем ID и статус. */
+/** The bot was added/removed or its rights changed — report the chat ID and status. */
 function onMyChatMember_(upd) {
   const chat = upd.chat;
   if (!chat || chat.type === 'private') return;
   const inLists = readAll_('chats').filter(function (c) { return String(c.chat_id) === String(chat.id); })
     .map(function (c) { return c.list_name; });
-  // уведомляем только о действиях админа или о чатах из наших списков (чтобы посторонние не спамили)
+  // notify only about admin actions or chats from our lists (so strangers can't spam admins)
   if (!(upd.from && isAdmin_(upd.from.id)) && !inLists.length) return;
 
-  const st = upd.new_chat_member.status;
   const m = upd.new_chat_member;
+  const st = m.status;
   const canPost = evaluateRights_({ problems: [], warnings: [] }, chat, m).problems.length === 0;
 
-  const head = (st === 'left' || st === 'kicked') ? '🚪 Бот удалён из чата' : '🔔 Статус бота в чате изменён';
+  const head = (st === 'left' || st === 'kicked') ? '🚪 Bot removed from chat' : '🔔 Bot status changed';
   const lines = [
     head + ': <b>' + esc_(chat.title || chat.username || chat.id) + '</b> (' + chatTypeName_(chat.type) + ')',
     'ID: <code>' + chat.id + '</code>',
-    'Статус: ' + st + ' · может публиковать: ' + (canPost ? 'да ✅' : 'нет ❌'),
+    'Status: ' + st + ' · can post: ' + (canPost ? 'yes ✅' : 'no ❌'),
   ];
-  if (chat.type === 'channel' && st === 'member') lines.push('В канале бот должен быть админом с правом «Публикация сообщений».');
-  if (inLists.length) lines.push('Состоит в списках: ' + inLists.map(esc_).join(', '));
-  else if (canPost) lines.push('Добавить в список: <code>/addchat ' + chat.id + ' listname</code>');
+  if (chat.type === 'channel' && st === 'member') lines.push('In a channel the bot must be an admin with the "Post messages" right.');
+  if (inLists.length) lines.push('In lists: ' + inLists.map(esc_).join(', '));
+  else if (canPost) lines.push('Add to a list: <code>/addchat ' + chat.id + ' listname</code>');
   notifyAdmins_(lines.join('\n'));
 }
 
@@ -251,28 +251,28 @@ function cmdPost_(msg) {
   const now = Date.now();
   const p = parsePostArgs_(raw, entities, now, tz_());
 
-  // Тип контента
+  // Content kind
   let kind, srcChat = '', srcMsg = '';
   if (msg.reply_to_message) {
-    if (p.text) throw new UserError('При ответе на сообщение текст не нужен — бот скопирует исходное сообщение как есть');
+    if (p.text) throw new UserError('When replying to a message, no text is needed — the bot copies the original message as is');
     kind = 'copy'; srcChat = String(msg.chat.id); srcMsg = String(msg.reply_to_message.message_id);
   } else if (!msg.text) {
-    kind = 'copy_caption'; srcChat = String(msg.chat.id); srcMsg = String(msg.message_id); // медиа с подписью-командой
-    if (p.text.length > 1024) throw new UserError('Подпись к медиа — максимум 1024 символа');
+    kind = 'copy_caption'; srcChat = String(msg.chat.id); srcMsg = String(msg.message_id); // media with a command caption
+    if (p.text.length > 1024) throw new UserError('Media caption is limited to 1024 characters');
   } else {
-    if (!p.text) throw new UserError('Пустой текст поста. Пример: <code>/post Привет! -list news</code>');
-    if (p.text.length > 4096) throw new UserError('Текст длиннее 4096 символов');
+    if (!p.text) throw new UserError('Empty post text. Example: <code>/post Hello! -list news</code>');
+    if (p.text.length > 4096) throw new UserError('Text is longer than 4096 characters');
     kind = 'text';
   }
 
-  // Цель
+  // Target
   let target, targetTitle = '', chatsCount;
   if (p.target.type === 'list') {
     target = requireList_(p.target.value).list_name;
     chatsCount = chatsInList_(target).length;
   } else {
     const chk = checkChatAccess_(normalizeChatRef_(p.target.value));
-    if (!chk.ok) throw new UserError('Чат <code>' + esc_(p.target.value) + '</code>: ' + chk.problems.join('; '));
+    if (!chk.ok) throw new UserError('Chat <code>' + esc_(p.target.value) + '</code>: ' + chk.problems.join('; '));
     target = String(chk.chat.id);
     targetTitle = chk.chat.title || chk.chat.username || '';
     chatsCount = 1;
@@ -296,21 +296,22 @@ function cmdPost_(msg) {
     return row;
   });
 
+  const until = p.endMs ? ' until ' + fmtDate_(p.endMs) : ' with no end date';
   const lines = [
-    '✅ <b>Задача #' + job.job_id + '</b> создана',
-    'Куда: ' + (p.target.type === 'list'
-      ? 'список <b>' + esc_(target) + '</b> (' + chatsCount + ' чат.)'
-      : 'чат <b>' + esc_(targetTitle) + '</b> <code>' + target + '</code>'),
-    'Первая публикация: ' + (p.startNow ? 'в течение минуты' : fmtDate_(p.startMs)) + (p.mixCount ? ' — во все чаты' : ''),
+    '✅ <b>Job #' + job.job_id + '</b> created',
+    'Target: ' + (p.target.type === 'list'
+      ? 'list <b>' + esc_(target) + '</b> (' + chatsCount + ' chat' + (chatsCount === 1 ? '' : 's') + ')'
+      : 'chat <b>' + esc_(targetTitle) + '</b> <code>' + target + '</code>'),
+    'First post: ' + (p.startNow ? 'within a minute' : fmtDate_(p.startMs)) + (p.mixCount ? ' — to all chats' : ''),
   ];
-  if (p.mixCount) lines.push('Затем каждые ' + fmtInterval_(p.interval) + ' в ' + p.mixCount + ' случайных чат(а)' + (p.endMs ? ' до ' + fmtDate_(p.endMs) : ' без остановки'));
-  else if (p.interval) lines.push('Повтор: каждые ' + fmtInterval_(p.interval) + (p.endMs ? ' до ' + fmtDate_(p.endMs) : ' без остановки'));
-  else lines.push('Разовая публикация');
+  if (p.mixCount) lines.push('Then every ' + fmtInterval_(p.interval) + ' to ' + p.mixCount + ' random chat(s)' + until);
+  else if (p.interval) lines.push('Repeat: every ' + fmtInterval_(p.interval) + until);
+  else lines.push('One-time post');
   const total = countRuns_(p.startMs, p.interval, p.endMs);
-  if (p.interval && total !== Infinity) lines.push('Всего публикаций: ' + total);
-  if (p.target.type === 'list' && !chatsCount) lines.push('⚠️ Список пока пуст — добавьте чаты до старта');
-  if (kind !== 'text') lines.push('ℹ️ Не удаляйте исходное сообщение в этом чате — бот копирует именно его');
-  lines.push('Остановить: /stopjob ' + job.job_id);
+  if (p.interval && total !== Infinity) lines.push('Total posts: ' + total);
+  if (p.target.type === 'list' && !chatsCount) lines.push('⚠️ The list is empty — add chats before the start time');
+  if (kind !== 'text') lines.push('ℹ️ Do not delete the original message in this chat — the bot copies it');
+  lines.push('Stop: /stopjob ' + job.job_id);
   reply_(msg.chat.id, lines.join('\n'));
 }
 
@@ -318,13 +319,13 @@ function cmdPost_(msg) {
 
 function describeJob_(j) {
   const icon = { active: '▶️', paused: '⏸', done: '✅', stopped: '⏹' }[j.status] || '•';
-  const where = j.target_type === 'list' ? 'список ' + esc_(j.target) : 'чат ' + esc_(j.target_title || j.target);
+  const where = j.target_type === 'list' ? 'list ' + esc_(j.target) : 'chat ' + esc_(j.target_title || j.target);
   const sched = j.mix_count
-    ? 'mix каждые ' + fmtInterval_(j.interval_min) + ' в ' + j.mix_count
-    : j.interval_min ? 'каждые ' + fmtInterval_(j.interval_min) : 'разово';
-  return icon + ' <b>#' + j.job_id + '</b> · ' + where + ' · ' + sched + (j.end_ms ? ' до ' + fmtDate_(j.end_ms) : '') +
-    '\n   «' + esc_(j.preview) + '»' +
-    '\n   след.: ' + (j.next_run_ms ? fmtDate_(j.next_run_ms) : '—') + ' · отправок: ' + j.runs +
+    ? 'mix every ' + fmtInterval_(j.interval_min) + ' to ' + j.mix_count
+    : j.interval_min ? 'every ' + fmtInterval_(j.interval_min) : 'one-time';
+  return icon + ' <b>#' + j.job_id + '</b> · ' + where + ' · ' + sched + (j.end_ms ? ' until ' + fmtDate_(j.end_ms) : '') +
+    '\n   "' + esc_(j.preview) + '"' +
+    '\n   next: ' + (j.next_run_ms ? fmtDate_(j.next_run_ms) : '—') + ' · sent: ' + j.runs +
     (j.last_error ? '\n   ⚠️ ' + esc_(String(j.last_error).slice(0, 150)) : '');
 }
 
@@ -333,17 +334,17 @@ function cmdJobs_(msg) {
   const live = jobs.filter(isLive_);
   const finished = jobs.length - live.length;
   reply_(msg.chat.id, live.length
-    ? '<b>Задачи (' + live.length + '):</b>\n' + live.map(describeJob_).join('\n') + (finished ? '\n\nЗавершённых/остановленных: ' + finished : '')
-    : 'Активных задач нет' + (finished ? ' (завершённых: ' + finished + ')' : ''));
+    ? '<b>Jobs (' + live.length + '):</b>\n' + live.map(describeJob_).join('\n') + (finished ? '\n\nFinished/stopped: ' + finished : '')
+    : 'No active jobs' + (finished ? ' (finished: ' + finished + ')' : ''));
 }
 
 function setJobStatus_(msg, args, allowedFrom, to) {
   const j = withLock_(function () {
     const job = findJob_(args);
-    if (allowedFrom.indexOf(job.status) === -1) throw new UserError('Задача #' + job.job_id + ' сейчас в статусе «' + job.status + '»');
+    if (allowedFrom.indexOf(job.status) === -1) throw new UserError('Job #' + job.job_id + ' is currently "' + job.status + '"');
     job.status = to;
     if (to === 'active' && job.next_run_ms && job.next_run_ms < Date.now()) {
-      // после паузы не досылаем пропущенное: ближайший слот в будущем (разовый пост — сразу)
+      // after a pause, missed posts are not sent: jump to the next future slot (a one-time post goes out now)
       job.next_run_ms = job.interval_min
         ? computeNextRun_(job.next_run_ms, job.interval_min, job.end_ms, Date.now())
         : Date.now();
