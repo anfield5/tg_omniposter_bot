@@ -1,19 +1,39 @@
+'use strict';
+/** Apps Script backend: commands, parser, scheduler (ported v1 suite + v2 regressions). */
 const assert = require('assert');
-const { makeEnv } = require('./harness');
-const D = sh => sh.rows.slice(1);
-let pass = 0; const t = (name, fn) => { try { fn(); pass++; console.log('✓', name); } catch (e) { console.log('✗', name, '\n ', e.message); process.exitCode = 1; } };
+const { createWorld, defaultChats, runner } = require('./lib/world');
+const { t, run } = runner();
+const D = (sh) => sh.rows.slice(1).filter((r) => r.some((v) => v !== ''));
 const HOUR = 3600e3, MIN = 60e3;
+const chats = defaultChats;
 
-const chats = () => ({
-  '-1001': { id: -1001, type: 'channel', title: 'News A', username: 'newsa', me: { status: 'administrator', can_post_messages: true } },
-  '-1002': { id: -1002, type: 'supergroup', title: 'Group B', me: { status: 'member' }, permissions: { can_send_messages: true } },
-  '-1003': { id: -1003, type: 'channel', title: 'C no rights', me: { status: 'administrator', can_post_messages: false } },
-  '-1004': { id: -1004, type: 'supergroup', title: 'Group D', me: { status: 'member' }, permissions: { can_send_messages: true } },
-  '-1005': { id: -1005, type: 'channel', title: 'Not member', me: { status: 'left' } },
-});
-
+/** v1-style harness facade over the shared test world (Apps Script only). */
+function makeEnv(opts = {}) {
+  const w = createWorld((opts.tg && opts.tg.chats) || chats());
+  if (opts.tg) { opts.tg.chats = w.tg.chats; if (opts.tg.migrate) w.tg.migrate = opts.tg.migrate; }
+  w.setNow(Date.UTC(2026, 9, 20, 9, 0));
+  w.gas.setup();
+  let uid = 1000, mid = 1;
+  const ctx = w.gas.ctx;
+  Object.defineProperty(ctx, '__deleteCalls', { get: () => w.gas.counters.deleteRows, set: (v) => { w.gas.counters.deleteRows = v; }, configurable: true });
+  Object.defineProperty(ctx, '__fetch', { get: () => w.gas.counters.fetch, set: (v) => { w.gas.counters.fetch = v; }, configurable: true });
+  Object.defineProperty(ctx, '__fetchAll', { get: () => w.gas.counters.fetchAll, set: (v) => { w.gas.counters.fetchAll = v; }, configurable: true });
+  const sent = w.tg.sent;
+  return {
+    ctx, sheets: w.store.sheets, sent, world: w,
+    advance: w.advance, setNow: w.setNow, now: () => Date.now(),
+    cmd(text, extra = {}) {
+      const before = sent.length;
+      w.gas.doPost({ update_id: uid++, message: Object.assign({ message_id: mid++, chat: { id: 42, type: 'private' }, from: { id: 42 }, text }, extra) });
+      return sent.slice(before).filter((s) => String(s.chat_id) === '42').map((s) => s.text).join('\n---\n');
+    },
+    tickAll() { const b = sent.length; w.gas.tick(); return sent.slice(b); },
+    tick() { return this.tickAll().filter((s) => String(s.chat_id) !== '42'); },
+  };
+}
 // ---------- pure parser ----------
 const env0 = makeEnv({ tg: { chats: chats() } });
+const _now0 = Date.UTC(2026, 9, 20, 9, 0);
 const P = env0.ctx;
 t('duration', () => {
   assert.equal(P.parseDuration_('2h'), 120); assert.equal(P.parseDuration_('0.75h'), 45);
@@ -25,27 +45,27 @@ t('date', () => {
   assert.throws(() => P.parseDateTime_('31.02.2026 14:00', 'x')); assert.throws(() => P.parseDateTime_('24/10/2026', 'x'));
 });
 t('parse example 1', () => {
-  const r = P.parsePostArgs_('/post hello hello -list newschannels -start 24.10.2026 14:00 -regularity 2h -end 26.11.2026 12:00', [], env0.now(), 'x');
+  const r = P.parsePostArgs_('/post hello hello -list newschannels -start 24.10.2026 14:00 -regularity 2h -end 26.11.2026 12:00', [], _now0, 'x');
   assert.equal(r.text, 'hello hello'); assert.equal(r.target.value, 'newschannels'); assert.equal(r.interval, 120);
   assert.equal(P.countRuns_(r.startMs, r.interval, r.endMs), 396);
 });
 t('parse example 2 (mix)', () => {
-  const r = P.parsePostArgs_('/post hi, andrew -list newschannels -start 24.10.2026 14:00 -mix 0.75h in 2', [], env0.now(), 'x');
+  const r = P.parsePostArgs_('/post hi, andrew -list newschannels -start 24.10.2026 14:00 -mix 0.75h in 2', [], _now0, 'x');
   assert.equal(r.text, 'hi, andrew'); assert.equal(r.interval, 45); assert.equal(r.mixCount, 2); assert.equal(r.endMs, null);
 });
 t('parse example 3 (chat, quotes, em-dash)', () => {
-  const r = P.parsePostArgs_('/post hi, andrew —chat -1001 -start "24.10.2026 14:00" -regularity 2h -end 26.11.2026 12:00', [], env0.now(), 'x');
+  const r = P.parsePostArgs_('/post hi, andrew —chat -1001 -start "24.10.2026 14:00" -regularity 2h -end 26.11.2026 12:00', [], _now0, 'x');
   assert.equal(r.target.type, 'chat'); assert.equal(r.target.value, '-1001');
 });
 t('multiline + entities shift', () => {
   const raw = '/post  Hello *bold*\nline2 -list x';
   const ents = [{ type: 'bot_command', offset: 0, length: 5 }, { type: 'bold', offset: 13, length: 6 }];
-  const r = P.parsePostArgs_(raw, ents, env0.now(), 'x');
+  const r = P.parsePostArgs_(raw, ents, _now0, 'x');
   assert.equal(r.text, 'Hello *bold*\nline2'); assert.equal(r.entities.length, 1);
   assert.equal(r.text.substr(r.entities[0].offset, r.entities[0].length), '*bold*');
 });
 t('validation errors', () => {
-  const n = env0.now();
+  const n = _now0;
   assert.throws(() => P.parsePostArgs_('/post hi', [], n, 'x'), /where to post/);
   assert.throws(() => P.parsePostArgs_('/post hi -list a -chat 1', [], n, 'x'));
   assert.throws(() => P.parsePostArgs_('/post hi -list a -start 01.01.2020 10:00', [], n, 'x'), /in the past/);
@@ -83,14 +103,14 @@ t('lists & chats commands', () => {
 
 t('non-admin rejected', () => {
   const e = makeEnv({ tg: { chats: chats() } });
-  e.ctx.doPost({ parameter: {}, postData: { contents: JSON.stringify({ update_id: 9, message: { message_id: 1, chat: { id: 7, type: 'private' }, from: { id: 7 }, text: '/addlist x' } }) } });
-  assert.match(e.sent[0].text, /Access denied[\s\S]*7/); assert.ok(!e.sheets.Lists);
+  e.world.gas.doPost(({ update_id: 9, message: { message_id: 1, chat: { id: 7, type: 'private' }, from: { id: 7 }, text: '/addlist x' } }));
+  assert.match(e.sent[0].text, /Access denied[\s\S]*7/); assert.equal(D(e.sheets.Lists).length, 0);
 });
 
 t('duplicate update ignored', () => {
   const e = makeEnv({ tg: { chats: chats() } });
-  const u = JSON.stringify({ update_id: 5, message: { message_id: 1, chat: { id: 42, type: 'private' }, from: { id: 42 }, text: '/addlist a' } });
-  e.ctx.doPost({ parameter: {}, postData: { contents: u } }); e.ctx.doPost({ parameter: {}, postData: { contents: u } });
+  const u = { update_id: 5, message: { message_id: 1, chat: { id: 42, type: 'private' }, from: { id: 42 }, text: '/addlist a' } };
+  e.world.gas.doPost(u); e.world.gas.doPost(u);
   assert.equal(D(e.sheets.Lists).length, 1);
 });
 
@@ -109,6 +129,7 @@ t('regular job: example 1 schedule and end', () => {
   const job = D(e.sheets.Jobs)[0]; assert.equal(job[1], 'done'); assert.equal(job[15], 3);
   assert.equal(D(e.sheets.Log).length, 6);
   assert.equal(D(e.sheets.Log)[0][7], 'https://t.me/newsa/' + D(e.sheets.Log)[0][6]);
+  assert.equal(D(e.sheets.Log)[0][10], 'gas');
 });
 
 t('mix job: first all, then random N', () => {
@@ -166,20 +187,20 @@ t('removelist stops its jobs; formula-like text safe', () => {
 
 t('my_chat_member notification', () => {
   const e = makeEnv({ tg: { chats: chats() } });
-  e.ctx.doPost({ parameter: {}, postData: { contents: JSON.stringify({ update_id: 1, my_chat_member: { chat: { id: -1007, type: 'channel', title: 'New' }, from: { id: 42 }, new_chat_member: { status: 'administrator', can_post_messages: true } } }) } });
+  e.world.gas.doPost(({ update_id: 1, my_chat_member: { chat: { id: -1007, type: 'channel', title: 'New' }, from: { id: 42 }, new_chat_member: { status: 'administrator', can_post_messages: true } } }));
   assert.match(e.sent[0].text, /-1007[\s\S]*yes ✅[\s\S]*\/addchat -1007/);
 });
 
 
 // ---------- regressions after refactoring ----------
 t('cell_: every string is stored as text', () => {
-  ['24.10.2026', 'TRUE', '1.50', '-1001', '=A1', 'Jan 5'].forEach(v => assert.equal(P.cell_(v), "'" + v));
-  assert.equal(P.cell_(''), ''); assert.equal(P.cell_(5), 5);
+  ['24.10.2026', 'TRUE', '1.50', '-1001', '=A1', 'Jan 5'].forEach(v => assert.equal(P.toCell_('str', v), "'" + v));
+  assert.equal(P.toCell_('str', ''), ''); assert.equal(P.toCell_('num', 5), 5);
 });
 t('blank sheet rows are ignored', () => {
   const e = makeEnv({ tg: { chats: chats() } });
   e.cmd('/addlist l'); e.cmd('/addchat -1001 l');
-  e.sheets.Chats.rows.push(['', '', '', '', '', '']);
+  e.sheets.Chats.rows.splice(2, 0, ['', '', '', '', '', '']);
   e.cmd('/post x -list l -start now'); e.advance(5e3);
   assert.equal(e.tick().length, 1);
 });
@@ -217,5 +238,25 @@ t('one-time post: delivery summary in notification', () => {
   assert.match(adm[0].text, /delivered 2 of 2/);
 });
 t('no internal errors', () => { assert.deepEqual(env0.ctx.__errors, []); });
-t('/version', () => { const e = makeEnv({ tg: { chats: chats() } }); assert.match(e.cmd('/version'), /v1\.0\.0/); });
-console.log(`\n${pass} passed`);
+t('/version', () => { const e = makeEnv({ tg: { chats: chats() } }); assert.match(e.cmd('/version'), /v2\.0\.0/); });
+t('upgrade from 1.0.0: existing sheets keep working, Log header gets the backend column', () => {
+  const { createWorld: cw } = require('./lib/world');
+  const w = cw(chats());
+  w.setNow(Date.UTC(2026, 9, 20, 9, 0));
+  const put = (name, rows) => { const sh = w.store.add(name); rows.forEach((r, i) => r.forEach((v, j) => w.store.set(sh, i + 1, j + 1, v))); };
+  const now = new Date(Date.now());
+  put('Lists', [['list_name', 'created_at'], ['l', now]]);
+  put('Chats', [['list_name', 'chat_id', 'title', 'type', 'username', 'added_at'], ['l', '-1001', 'News A', 'channel', 'newsa', now]]);
+  put('Jobs', [['job_id', 'status', 'kind', 'target_type', 'target', 'target_title', 'preview', 'payload', 'src_chat_id', 'src_msg_id', 'start', 'interval_min', 'end', 'mix_count', 'next_run', 'runs', 'last_run', 'last_error', 'created_at', 'created_by'],
+    [7, 'active', 'text', 'list', 'l', '', 'old', '{"text":"old job","entities":[]}', '', '', now, 60, '', '', new Date(Date.now() + MIN), 3, now, '', now, '42']]);
+  put('Log', [['time', 'job_id', 'run', 'target', 'chat_id', 'chat_title', 'message_id', 'link', 'status', 'error'], [now, 7, 3, 'list:l', '-1001', 'News A', 5, '', 'ok', '']]);
+  w.gas.setup();
+  assert.equal(w.store.sheet('Log').rows[0][10], 'backend');
+  w.advance(2 * MIN); w.gas.tick();
+  assert.equal(w.tg.sent.filter((x) => x.text === 'old job').length, 1);
+  const jobs = D(w.store.sheet('Jobs'));
+  assert.equal(jobs[0][15], 4);
+  w.gas.doPost({ update_id: 1, message: { message_id: 1, chat: { id: 42, type: 'private' }, from: { id: 42 }, text: '/post new -list l' } });
+  assert.match(w.tg.adminMessages().slice(-1)[0], /Job #8/);
+});
+run();

@@ -2,6 +2,32 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/).
 
+## [2.0.0] — 2026-11-24
+
+Two interchangeable backends (Apps Script and a Node.js server) with switching via bot commands.
+
+### Added
+- **Server backend** (`server/`): Node.js 22 + SQLite, runs in Docker on any VPS. It receives commands by long polling, schedules with ~5 s accuracy, and is free of Apps Script quotas.
+- **Hybrid storage**: the server works on SQLite and mirrors every change to the same Google Sheet (tables + log), so the sheet stays a live view and the hand-over point.
+- **`/switch server` / `/switch gas`**: moves the bot between backends with lists, chats, jobs and schedules. Messages sent right after the switch reach the new backend.
+- **`/status`**: active backend, server heartbeat and version, last switch, job and list counts.
+- **`Control` sheet** (`active_backend`, `epoch`, heartbeat, switch info, Apps Script webhook URL).
+- **Auto-failover**: Apps Script takes over if the active server is silent for 5 min (`AUTO_FAILOVER=off` to disable).
+- **Lease**: a server that can't reach Google Sheets for 3 min stops itself, so the backends are never active at the same time.
+- `backend` column at the end of the `Log` sheet (which backend sent the post).
+- **Deployment tooling**: `npm run push:gas` (bundles `core/` + `apps-script/` for clasp), `docker-compose.yml`, GitHub Actions for tests on every push and deploys of both backends on a `v*` tag.
+- Test suite for the server and for switching, failover, lease and time-zone (DST) scenarios on a shared fake Telegram + Google Sheet (35 tests in total).
+
+### Changed
+- **Code layout**: shared logic moved to `core/`; the Apps Script adapter lives in `apps-script/`. Telegram I/O in core goes through effects (generators), so the same code runs synchronously in Apps Script and asynchronously on the server.
+- Job IDs are now `max(job_id) + 1` from the shared table (no more per-backend counter).
+- Times are epoch milliseconds inside the core; sheets keep real date cells.
+
+### Upgrading from 1.0.0
+1. `npm install`, create `.clasp.json` from `.clasp.json.example`, then `npm run push:gas` (replaces the old files in the Apps Script project).
+2. Run `setup()` once (creates the `Control` sheet and date formats), then `setWebhook()`.
+3. Existing lists, chats and jobs are kept. `setup()` adds the new `backend` column at the end of the `Log` header; older rows simply leave it empty.
+
 ## [1.0.0] — 2026-10-26
 
 First public release. A serverless Telegram bot (Google Apps Script + Google Sheets) that posts scheduled content to lists of channels and groups.

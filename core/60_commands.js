@@ -1,49 +1,71 @@
 /**
  * ============================== COMMANDS ==============================
  * The bot accepts commands only in private chat and only from ADMIN_IDS.
+ * Handlers are generators: run them with the platform driver.
  */
 
 function getCommands_() {
   return {
-    start: cmdHelp_, help: cmdHelp_,
-    addlist: cmdAddList_, removelist: cmdRemoveList_, lists: cmdLists_, showlist: cmdShowList_, list: cmdShowList_,
-    addchat: cmdAddChat_, removechat: cmdRemoveChat_, checkchats: cmdCheckChats_,
-    version: cmdVersion_,
-    post: cmdPost_, jobs: cmdJobs_, stopjob: cmdStopJob_, pausejob: cmdPauseJob_, resumejob: cmdResumeJob_,
+    start: cmdHelpE_, help: cmdHelpE_,
+    addlist: cmdAddListE_, removelist: cmdRemoveListE_, lists: cmdListsE_, showlist: cmdShowListE_, list: cmdShowListE_,
+    addchat: cmdAddChatE_, removechat: cmdRemoveChatE_, checkchats: cmdCheckChatsE_,
+    post: cmdPostE_, jobs: cmdJobsE_, stopjob: cmdStopJobE_, pausejob: cmdPauseJobE_, resumejob: cmdResumeJobE_,
+    switch: cmdSwitchE_, status: cmdStatusE_, version: cmdVersionE_,
   };
 }
 
-function handleUpdate_(u) {
-  if (u.my_chat_member) return onMyChatMember_(u.my_chat_member);
+const BOT_COMMANDS = [
+  { command: 'post', description: 'Schedule a post' },
+  { command: 'jobs', description: 'Active jobs' },
+  { command: 'lists', description: 'All lists' },
+  { command: 'showlist', description: 'Chats in a list' },
+  { command: 'addlist', description: 'Create a list' },
+  { command: 'removelist', description: 'Delete a list' },
+  { command: 'addchat', description: 'Add a chat to a list' },
+  { command: 'removechat', description: 'Remove a chat from a list / all lists' },
+  { command: 'checkchats', description: 'Check bot permissions' },
+  { command: 'pausejob', description: 'Pause a job' },
+  { command: 'resumejob', description: 'Resume a job' },
+  { command: 'stopjob', description: 'Stop a job' },
+  { command: 'status', description: 'Active backend and health' },
+  { command: 'switch', description: 'Switch backend: gas | server' },
+  { command: 'version', description: 'Bot version' },
+  { command: 'help', description: 'Help' },
+];
+
+function* handleUpdateE_(u) {
+  if (u.my_chat_member) { yield* onMyChatMemberE_(u.my_chat_member); return; }
 
   const msg = u.message;
   if (!msg || !msg.chat || msg.chat.type !== 'private' || !msg.from) return;
 
   if (!isAdmin_(msg.from.id)) {
-    reply_(msg.chat.id, '⛔ Access denied.\nYour Telegram ID: <code>' + msg.from.id + '</code>\n' +
+    yield* replyE_(msg.chat.id, '⛔ Access denied.\nYour Telegram ID: <code>' + msg.from.id + '</code>\n' +
       'The bot owner can add it to ADMIN_IDS.');
     return;
   }
 
   const text = msg.text || msg.caption || '';
   const cm = text.match(/^\/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?=\s|$)/);
-  if (!cm) { reply_(msg.chat.id, 'I only understand commands. See /help'); return; }
+  if (!cm) { yield* replyE_(msg.chat.id, 'I only understand commands. See /help'); return; }
 
   const handler = getCommands_()[cm[1].toLowerCase()];
-  if (!handler) { reply_(msg.chat.id, 'Unknown command. See /help'); return; }
+  if (!handler) { yield* replyE_(msg.chat.id, 'Unknown command. See /help'); return; }
 
+  let errHtml = null;
   try {
-    handler(msg, text.slice(cm[0].length).trim());
+    yield* handler(msg, text.slice(cm[0].length).trim());
   } catch (e) {
-    if (e instanceof UserError) reply_(msg.chat.id, '❌ ' + e.message);
-    else { console.error(e.stack); reply_(msg.chat.id, '⚠️ Internal error: ' + esc_(e.message)); }
+    if (e instanceof UserError) errHtml = '❌ ' + e.message;
+    else { PLATFORM.log('error', e && e.stack); errHtml = '⚠️ Internal error: ' + esc_(e.message); }
   }
+  if (errHtml) yield* replyE_(msg.chat.id, errHtml);
 }
 
 // ------------------------------- help -------------------------------
 
-function cmdHelp_(msg) {
-  reply_(msg.chat.id, [
+function* cmdHelpE_(msg) {
+  yield* replyE_(msg.chat.id, [
     '<b>📋 Lists</b>',
     '/addlist <i>name</i> — create a list',
     '/removelist <i>name</i> — delete a list, its chats, and stop its jobs',
@@ -69,35 +91,39 @@ function cmdHelp_(msg) {
     '<b>⏱ Jobs</b>',
     '/jobs — active jobs',
     '/pausejob <i>N</i>, /resumejob <i>N</i>, /stopjob <i>N</i>',
+    '',
+    '<b>⚙️ Backend</b>',
+    '/status — active backend and server health',
+    '/switch <i>server|gas</i> — move the bot between the server and Apps Script',
     '/version — bot version',
     '',
     'Time zone: <code>' + esc_(tz_()) + '</code>. Post log: Google Sheet, "Log" tab.',
   ].join('\n'));
 }
 
-function cmdVersion_(msg) {
-  reply_(msg.chat.id, '🤖 <b>Autopost Bot</b> v' + VERSION + ' (' + RELEASE_DATE + ')\n' +
-    'Mode: ' + esc_(prop_('MODE') || 'not configured') + ' · time zone: ' + esc_(tz_()));
+function* cmdVersionE_(msg) {
+  yield* replyE_(msg.chat.id, '🤖 <b>Autopost Bot</b> v' + VERSION + ' (' + RELEASE_DATE + ')\n' +
+    'Backend: ' + BACKEND_NAMES[PLATFORM.name] + ' · time zone: ' + esc_(tz_()));
 }
 
 // ------------------------------- lists -------------------------------
 
-function cmdAddList_(msg, args) {
+function* cmdAddListE_(msg, args) {
   const name = validateListName_(args);
   withLock_(function () {
     if (findList_(name)) throw new UserError('List "' + esc_(name) + '" already exists');
-    appendRows_('lists', [{ list_name: name, created_at: new Date() }]);
+    insert_('lists', [{ list_name: name, created_at: Date.now() }]);
   });
-  reply_(msg.chat.id, '✅ List <b>' + esc_(name) + '</b> created.\nAdd chats: <code>/addchat id ' + esc_(name) + '</code>');
+  yield* replyE_(msg.chat.id, '✅ List <b>' + esc_(name) + '</b> created.\nAdd chats: <code>/addchat id ' + esc_(name) + '</code>');
 }
 
-function cmdRemoveList_(msg, args) {
+function* cmdRemoveListE_(msg, args) {
   const name = validateListName_(args);
   const res = withLock_(function () {
     const list = requireList_(name);
     const chats = chatsInList_(name);
-    deleteRows_('chats', chats);
-    deleteRows_('lists', [list]);
+    remove_('chats', chats);
+    remove_('lists', [list]);
     let stopped = 0;
     readJobs_().forEach(function (j) {
       if (j.target_type === 'list' && lc_(j.target) === lc_(name) && isLive_(j)) {
@@ -107,15 +133,15 @@ function cmdRemoveList_(msg, args) {
     invalidateSchedule_();
     return { chats: chats.length, stopped: stopped };
   });
-  reply_(msg.chat.id, '🗑 List <b>' + esc_(name) + '</b> deleted. Chats removed: ' + res.chats + ', jobs stopped: ' + res.stopped);
+  yield* replyE_(msg.chat.id, '🗑 List <b>' + esc_(name) + '</b> deleted. Chats removed: ' + res.chats + ', jobs stopped: ' + res.stopped);
 }
 
-function cmdLists_(msg) {
-  const lists = readAll_('lists');
-  if (!lists.length) { reply_(msg.chat.id, 'No lists yet. Create one: <code>/addlist name</code>'); return; }
-  const chats = readAll_('chats');
+function* cmdListsE_(msg) {
+  const lists = rows_('lists');
+  if (!lists.length) { yield* replyE_(msg.chat.id, 'No lists yet. Create one: <code>/addlist name</code>'); return; }
+  const chats = rows_('chats');
   const jobs = readJobs_();
-  reply_(msg.chat.id, '<b>Lists:</b>\n' + lists.map(function (l) {
+  yield* replyE_(msg.chat.id, '<b>Lists:</b>\n' + lists.map(function (l) {
     const n = lc_(l.list_name);
     const c = chats.filter(function (x) { return lc_(x.list_name) === n; }).length;
     const j = jobs.filter(function (x) { return x.target_type === 'list' && lc_(x.target) === n && x.status === 'active'; }).length;
@@ -123,11 +149,11 @@ function cmdLists_(msg) {
   }).join('\n'));
 }
 
-function cmdShowList_(msg, args) {
+function* cmdShowListE_(msg, args) {
   const name = validateListName_(args);
   requireList_(name);
   const chats = chatsInList_(name);
-  reply_(msg.chat.id, '<b>' + esc_(name) + '</b> (' + chats.length + '):\n' + (chats.length
+  yield* replyE_(msg.chat.id, '<b>' + esc_(name) + '</b> (' + chats.length + '):\n' + (chats.length
     ? chats.map(function (c) {
       return '• ' + esc_(c.title || '—') + ' · ' + chatTypeName_(c.type) + (c.username ? ' · @' + esc_(c.username) : '') +
         '\n   <code>' + c.chat_id + '</code>';
@@ -137,7 +163,7 @@ function cmdShowList_(msg, args) {
 
 // ------------------------------- chats -------------------------------
 
-function cmdAddChat_(msg, args) {
+function* cmdAddChatE_(msg, args) {
   const tokens = args.split(/\s+/).filter(Boolean);
   if (tokens.length < 2) throw new UserError('Usage: <code>/addchat id [id2 …] listname</code>');
   const name = validateListName_(tokens.pop());
@@ -149,7 +175,7 @@ function cmdAddChat_(msg, args) {
     try { refs.push(normalizeChatRef_(t)); } catch (e) { lines.push('❌ ' + e.message); }
   });
   const toAdd = [];
-  checkChatsAccess_(refs).forEach(function (chk, i) {
+  (yield* checkChatsAccessE_(refs)).forEach(function (chk, i) {
     if (!chk.ok) lines.push('❌ <code>' + esc_(refs[i]) + '</code>: ' + chk.problems.join('; '));
     else toAdd.push({ chk: chk });
   });
@@ -163,17 +189,17 @@ function cmdAddChat_(msg, args) {
       const label = esc_(c.title || c.username || c.id) + ' <code>' + c.id + '</code>';
       const dup = existing.concat(rows).some(function (x) { return String(x.chat_id) === String(c.id); });
       if (dup) { lines.push('ℹ️ ' + label + ' is already in the list'); return; }
-      rows.push({ list_name: list.list_name, chat_id: String(c.id), title: c.title || '', type: c.type, username: c.username || '', added_at: new Date() });
+      rows.push({ list_name: list.list_name, chat_id: String(c.id), title: c.title || '', type: c.type, username: c.username || '', added_at: Date.now() });
       lines.push('✅ ' + label + ' (' + chatTypeName_(c.type) + ')' +
         (a.chk.warnings.length ? '\n   ⚠️ ' + a.chk.warnings.join('; ') : ''));
     });
-    appendRows_('chats', rows);
+    insert_('chats', rows);
     return list;
   });
-  reply_(msg.chat.id, '<b>' + esc_(list.list_name) + '</b>:\n' + lines.join('\n'));
+  yield* replyE_(msg.chat.id, '<b>' + esc_(list.list_name) + '</b>:\n' + lines.join('\n'));
 }
 
-function cmdRemoveChat_(msg, args) {
+function* cmdRemoveChatE_(msg, args) {
   const tokens = args.split(/\s+/).filter(Boolean);
   if (tokens.length < 1 || tokens.length > 2) throw new UserError('Usage: <code>/removechat id [listname]</code>');
   const ref = normalizeChatRef_(tokens[0]);
@@ -181,18 +207,18 @@ function cmdRemoveChat_(msg, args) {
 
   const removed = withLock_(function () {
     if (listName) requireList_(listName);
-    const rows = readAll_('chats').filter(function (c) {
+    const rows = rows_('chats').filter(function (c) {
       return chatMatches_(c, ref) && (!listName || lc_(c.list_name) === lc_(listName));
     });
     if (!rows.length) throw new UserError('Chat <code>' + esc_(ref) + '</code> not found' + (listName ? ' in list "' + esc_(listName) + '"' : ' in any list'));
-    deleteRows_('chats', rows);
+    remove_('chats', rows);
     return rows.map(function (r) { return r.list_name; });
   });
-  reply_(msg.chat.id, '🗑 Chat <code>' + esc_(ref) + '</code> removed from: ' + removed.map(esc_).join(', '));
+  yield* replyE_(msg.chat.id, '🗑 Chat <code>' + esc_(ref) + '</code> removed from: ' + removed.map(esc_).join(', '));
 }
 
-function cmdCheckChats_(msg, args) {
-  let rows = readAll_('chats');
+function* cmdCheckChatsE_(msg, args) {
+  let rows = rows_('chats');
   if (args) {
     const name = validateListName_(args);
     requireList_(name);
@@ -201,10 +227,10 @@ function cmdCheckChats_(msg, args) {
   const uniq = {};
   rows.forEach(function (c) { (uniq[String(c.chat_id)] = uniq[String(c.chat_id)] || []).push(c); });
   const ids = Object.keys(uniq);
-  if (!ids.length) { reply_(msg.chat.id, 'No chats'); return; }
+  if (!ids.length) { yield* replyE_(msg.chat.id, 'No chats'); return; }
 
   let ok = 0;
-  const checks = checkChatsAccess_(ids);
+  const checks = yield* checkChatsAccessE_(ids);
   const lines = ids.map(function (id, i) {
     const chk = checks[i];
     const title = esc_((chk.chat && chk.chat.title) || uniq[id][0].title || '—');
@@ -215,14 +241,14 @@ function cmdCheckChats_(msg, args) {
     }
     return '❌ ' + title + ' <code>' + id + '</code> [' + esc_(lists) + ']\n   ' + chk.problems.join('; ');
   });
-  reply_(msg.chat.id, '<b>Permission check: ' + ok + '/' + ids.length + ' OK</b>\n' + lines.join('\n'));
+  yield* replyE_(msg.chat.id, '<b>Permission check: ' + ok + '/' + ids.length + ' OK</b>\n' + lines.join('\n'));
 }
 
 /** The bot was added/removed or its rights changed — report the chat ID and status. */
-function onMyChatMember_(upd) {
+function* onMyChatMemberE_(upd) {
   const chat = upd.chat;
   if (!chat || chat.type === 'private') return;
-  const inLists = readAll_('chats').filter(function (c) { return String(c.chat_id) === String(chat.id); })
+  const inLists = rows_('chats').filter(function (c) { return String(c.chat_id) === String(chat.id); })
     .map(function (c) { return c.list_name; });
   // notify only about admin actions or chats from our lists (so strangers can't spam admins)
   if (!(upd.from && isAdmin_(upd.from.id)) && !inLists.length) return;
@@ -240,16 +266,16 @@ function onMyChatMember_(upd) {
   if (chat.type === 'channel' && st === 'member') lines.push('In a channel the bot must be an admin with the "Post messages" right.');
   if (inLists.length) lines.push('In lists: ' + inLists.map(esc_).join(', '));
   else if (canPost) lines.push('Add to a list: <code>/addchat ' + chat.id + ' listname</code>');
-  notifyAdmins_(lines.join('\n'));
+  yield* notifyAdminsE_(lines.join('\n'));
 }
 
 // -------------------------------- post --------------------------------
 
-function cmdPost_(msg) {
+function* cmdPostE_(msg) {
   const raw = msg.text || msg.caption || '';
   const entities = msg.entities || msg.caption_entities || [];
   const now = Date.now();
-  const p = parsePostArgs_(raw, entities, now, tz_());
+  const p = parsePostArgs_(raw, entities, now);
 
   // Content kind
   let kind, srcChat = '', srcMsg = '';
@@ -271,7 +297,7 @@ function cmdPost_(msg) {
     target = requireList_(p.target.value).list_name;
     chatsCount = chatsInList_(target).length;
   } else {
-    const chk = checkChatAccess_(normalizeChatRef_(p.target.value));
+    const chk = yield* checkChatAccessE_(normalizeChatRef_(p.target.value));
     if (!chk.ok) throw new UserError('Chat <code>' + esc_(p.target.value) + '</code>: ' + chk.problems.join('; '));
     target = String(chk.chat.id);
     targetTitle = chk.chat.title || chk.chat.username || '';
@@ -280,18 +306,17 @@ function cmdPost_(msg) {
 
   const job = withLock_(function () {
     if (p.target.type === 'list') requireList_(target);
-    const id = nextJobId_();
     const row = {
-      job_id: id, status: 'active', kind: kind,
+      job_id: nextJobId_(), status: 'active', kind: kind,
       target_type: p.target.type, target: target, target_title: targetTitle,
       preview: (p.text || '[' + kind + ']').replace(/\s+/g, ' ').slice(0, CFG.PREVIEW_LEN),
       payload: JSON.stringify({ text: p.text, entities: p.entities }),
       src_chat_id: srcChat, src_msg_id: srcMsg,
-      start: new Date(p.startMs), interval_min: p.interval || '', end: p.endMs ? new Date(p.endMs) : '',
-      mix_count: p.mixCount || '', next_run: new Date(p.startMs), runs: 0,
-      last_run: '', last_error: '', created_at: new Date(), created_by: String(msg.from.id),
+      start: p.startMs, interval_min: p.interval || null, end: p.endMs || null,
+      mix_count: p.mixCount || null, next_run: p.startMs, runs: 0,
+      last_run: null, last_error: '', created_at: Date.now(), created_by: String(msg.from.id),
     };
-    appendRows_('jobs', [row]);
+    insert_('jobs', [row]);
     invalidateSchedule_();
     return row;
   });
@@ -312,7 +337,7 @@ function cmdPost_(msg) {
   if (p.target.type === 'list' && !chatsCount) lines.push('⚠️ The list is empty — add chats before the start time');
   if (kind !== 'text') lines.push('ℹ️ Do not delete the original message in this chat — the bot copies it');
   lines.push('Stop: /stopjob ' + job.job_id);
-  reply_(msg.chat.id, lines.join('\n'));
+  yield* replyE_(msg.chat.id, lines.join('\n'));
 }
 
 // -------------------------------- jobs --------------------------------
@@ -323,40 +348,40 @@ function describeJob_(j) {
   const sched = j.mix_count
     ? 'mix every ' + fmtInterval_(j.interval_min) + ' to ' + j.mix_count
     : j.interval_min ? 'every ' + fmtInterval_(j.interval_min) : 'one-time';
-  return icon + ' <b>#' + j.job_id + '</b> · ' + where + ' · ' + sched + (j.end_ms ? ' until ' + fmtDate_(j.end_ms) : '') +
+  return icon + ' <b>#' + j.job_id + '</b> · ' + where + ' · ' + sched + (j.end ? ' until ' + fmtDate_(j.end) : '') +
     '\n   "' + esc_(j.preview) + '"' +
-    '\n   next: ' + (j.next_run_ms ? fmtDate_(j.next_run_ms) : '—') + ' · sent: ' + j.runs +
+    '\n   next: ' + (j.next_run ? fmtDate_(j.next_run) : '—') + ' · sent: ' + j.runs +
     (j.last_error ? '\n   ⚠️ ' + esc_(String(j.last_error).slice(0, 150)) : '');
 }
 
-function cmdJobs_(msg) {
+function* cmdJobsE_(msg) {
   const jobs = readJobs_();
   const live = jobs.filter(isLive_);
   const finished = jobs.length - live.length;
-  reply_(msg.chat.id, live.length
+  yield* replyE_(msg.chat.id, live.length
     ? '<b>Jobs (' + live.length + '):</b>\n' + live.map(describeJob_).join('\n') + (finished ? '\n\nFinished/stopped: ' + finished : '')
     : 'No active jobs' + (finished ? ' (finished: ' + finished + ')' : ''));
 }
 
-function setJobStatus_(msg, args, allowedFrom, to) {
+function* setJobStatusE_(msg, args, allowedFrom, to) {
   const j = withLock_(function () {
     const job = findJob_(args);
     if (allowedFrom.indexOf(job.status) === -1) throw new UserError('Job #' + job.job_id + ' is currently "' + job.status + '"');
     job.status = to;
-    if (to === 'active' && job.next_run_ms && job.next_run_ms < Date.now()) {
+    if (to === 'active' && job.next_run && job.next_run < Date.now()) {
       // after a pause, missed posts are not sent: jump to the next future slot (a one-time post goes out now)
-      job.next_run_ms = job.interval_min
-        ? computeNextRun_(job.next_run_ms, job.interval_min, job.end_ms, Date.now())
+      job.next_run = job.interval_min
+        ? computeNextRun_(job.next_run, job.interval_min, job.end, Date.now())
         : Date.now();
-      if (!job.next_run_ms) job.status = 'done';
+      if (!job.next_run) job.status = 'done';
     }
     saveJob_(job);
     invalidateSchedule_();
     return job;
   });
-  reply_(msg.chat.id, describeJob_(j));
+  yield* replyE_(msg.chat.id, describeJob_(j));
 }
 
-function cmdStopJob_(msg, args) { setJobStatus_(msg, args, ['active', 'paused'], 'stopped'); }
-function cmdPauseJob_(msg, args) { setJobStatus_(msg, args, ['active'], 'paused'); }
-function cmdResumeJob_(msg, args) { setJobStatus_(msg, args, ['paused'], 'active'); }
+function* cmdStopJobE_(msg, args) { yield* setJobStatusE_(msg, args, ['active', 'paused'], 'stopped'); }
+function* cmdPauseJobE_(msg, args) { yield* setJobStatusE_(msg, args, ['active'], 'paused'); }
+function* cmdResumeJobE_(msg, args) { yield* setJobStatusE_(msg, args, ['paused'], 'active'); }

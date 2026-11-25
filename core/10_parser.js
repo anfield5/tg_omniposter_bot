@@ -22,8 +22,8 @@ function parseDuration_(s) {
   return minutes;
 }
 
-/** "24.10.2026 14:00" (in time zone tz) | "now" → {ms, now} */
-function parseDateTime_(s, tz) {
+/** "24.10.2026 14:00" (in the bot time zone) | "now" → {ms, now} */
+function parseDateTime_(s) {
   s = String(s).trim();
   if (/^now$/i.test(s)) return { ms: Date.now(), now: true };
   const m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})[\sT,]+(\d{1,2}):(\d{2})$/);
@@ -32,10 +32,10 @@ function parseDateTime_(s, tz) {
   const norm = pad2_(d) + '.' + pad2_(mo) + '.' + y + ' ' + pad2_(h) + ':' + pad2_(mi);
   const bad = new UserError('Date/time does not exist: "' + esc_(s) + '"');
   if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59) throw bad;
-  const date = Utilities.parseDate(norm, tz, 'dd.MM.yyyy HH:mm');
-  // parseDate is lenient (31.02 → 03.03, times inside a DST gap) — catch it by formatting back
-  if (Utilities.formatDate(date, tz, 'dd.MM.yyyy HH:mm') !== norm) throw bad;
-  return { ms: date.getTime(), now: false };
+  const ms = PLATFORM.tzParse(norm, 'dd.MM.yyyy HH:mm');
+  // parsers are lenient (31.02 → 03.03, times inside a DST gap) — catch it by formatting back
+  if (ms == null || isNaN(ms) || PLATFORM.tzFormat(ms, 'dd.MM.yyyy HH:mm') !== norm) throw bad;
+  return { ms: ms, now: false };
 }
 
 function unquote_(v) {
@@ -84,7 +84,7 @@ function shiftEntities_(entities, start, len) {
  *   /post <text> (-list name | -chat id) [-start "date"|now] [-regularity 2h] [-end "date"] [-mix 0.75h in 2]
  * The text is everything before the first flag. Flags also accept "—" (iOS turns "--" into an em dash).
  */
-function parsePostArgs_(raw, entities, nowMs, tz) {
+function parsePostArgs_(raw, entities, nowMs) {
   raw = String(raw || '');
   const cm = raw.match(/^\/post(?:@[A-Za-z0-9_]+)?/i);
   const base = cm ? cm[0].length : 0;
@@ -118,7 +118,7 @@ function parsePostArgs_(raw, entities, nowMs, tz) {
   if (flags.list !== undefined && flags.chat !== undefined) throw new UserError('Use only one of <code>-list</code> or <code>-chat</code>');
   if (flags.regularity && flags.mix) throw new UserError('<code>-regularity</code> and <code>-mix</code> are mutually exclusive');
 
-  const start = flags.start ? parseDateTime_(flags.start, tz) : { ms: nowMs, now: true };
+  const start = flags.start ? parseDateTime_(flags.start) : { ms: nowMs, now: true };
   if (start.now) start.ms = nowMs;
   if (!start.now && start.ms < nowMs - 60 * 1000) throw new UserError('Start time ' + esc_(flags.start) + ' is in the past');
 
@@ -136,7 +136,7 @@ function parsePostArgs_(raw, entities, nowMs, tz) {
   let endMs = null;
   if (flags.end) {
     if (!interval) throw new UserError('<code>-end</code> only makes sense with <code>-regularity</code> or <code>-mix</code>');
-    endMs = parseDateTime_(flags.end, tz).ms;
+    endMs = parseDateTime_(flags.end).ms;
     if (endMs < start.ms) throw new UserError('End date is before the start date');
   }
 

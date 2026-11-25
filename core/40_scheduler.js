@@ -1,32 +1,30 @@
 /**
  * ============================== SCHEDULER ==============================
- * tick() is called by a time-driven trigger every minute.
- * To save the daily Apps Script quota, the next due time is cached in the NEXT_DUE
- * property: until it arrives, tick() exits within milliseconds without opening the spreadsheet.
+ * The platform calls runSchedulerE_() periodically (Apps Script: every minute; server: every few seconds).
+ * The next due time is cached in the NEXT_DUE property, so idle runs exit without reading the jobs table.
  */
 
 const NO_JOBS = 8.64e15; // "never"
 
-function tick() {
-  const p = props_().getProperties(); // one properties read instead of several
-  if (p.MODE === 'polling') {
-    try { pollUpdates_(); } catch (e) { console.error('poll: ' + e.stack); }
-  }
-  const nextDue = Number(p.NEXT_DUE || 0);
-  if (nextDue && nextDue > Date.now() + CFG.EARLY_TOLERANCE_MS) return;
-  runScheduler_();
-}
-
-/** Reset the cached next due time (after any change to Jobs). */
+/** Reset the cached next due time (after any change to Jobs or after a backend switch). */
 function invalidateSchedule_() { setProp_('NEXT_DUE', 0); }
 
-function isDue_(j, now) {
-  return j.status === 'active' && !!j.next_run_ms && j.next_run_ms <= now + CFG.EARLY_TOLERANCE_MS;
+/** How early a post may go out: Apps Script ticks once a minute, the server every few seconds (0). */
+function earlyMs_() { return PLATFORM.earlyToleranceMs != null ? PLATFORM.earlyToleranceMs : CFG.EARLY_TOLERANCE_MS; }
+
+/** Cheap check: is anything possibly due? */
+function schedulerMaybeDue_() {
+  const nextDue = Number(getProp_('NEXT_DUE') || 0);
+  return !nextDue || nextDue <= Date.now() + earlyMs_();
 }
 
-function runScheduler_() {
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(10000)) return; // another run is in progress — try again in a minute
+function isDue_(j, now) {
+  return j.status === 'active' && !!j.next_run && j.next_run <= now + earlyMs_();
+}
+
+function* runSchedulerE_() {
+  if (!schedulerMaybeDue_()) return;
+  if (!PLATFORM.lock(10000)) return; // another run is in progress — try again later
   try {
     const started = Date.now();
     const jobs = readJobs_();
@@ -34,12 +32,12 @@ function runScheduler_() {
     const ctx = due.length ? buildChatCtx_() : null;
 
     for (let i = 0; i < due.length; i++) {
-      if (Date.now() - started > CFG.TICK_BUDGET_MS) break; // the rest goes to the next tick
+      if (Date.now() - started > CFG.TICK_BUDGET_MS) break; // the rest goes to the next run
       const job = due[i];
       try {
-        runJob_(job, ctx, jobs);
+        yield* runJobE_(job, ctx, jobs);
       } catch (e) {
-        console.error('job #' + job.job_id + ': ' + e.stack);
+        PLATFORM.log('error', 'job #' + job.job_id + ': ' + (e && e.stack));
         job.last_error = 'Error: ' + e.message;
         saveJob_(job);
       }
@@ -47,19 +45,19 @@ function runScheduler_() {
 
     let min = NO_JOBS;
     jobs.forEach(function (j) {
-      if (j.status === 'active' && j.next_run_ms && j.next_run_ms < min) min = j.next_run_ms;
+      if (j.status === 'active' && j.next_run && j.next_run < min) min = j.next_run;
     });
     setProp_('NEXT_DUE', min);
   } finally {
-    lock.releaseLock();
+    PLATFORM.unlock();
   }
 }
 
 /** Chat index: by list and by ID (for titles/usernames in the log). */
 function buildChatCtx_() {
   const byList = {}, byId = {}, lists = {};
-  readAll_('lists').forEach(function (l) { lists[lc_(l.list_name)] = true; });
-  readAll_('chats').forEach(function (c) {
+  rows_('lists').forEach(function (l) { lists[lc_(l.list_name)] = true; });
+  rows_('chats').forEach(function (c) {
     const k = lc_(c.list_name);
     (byList[k] = byList[k] || []).push(c);
     byId[String(c.chat_id)] = c;
@@ -79,7 +77,7 @@ function resolveRecipients_(job, ctx) {
   return job.mix_count && job.runs > 0 ? sample_(ids, job.mix_count) : ids;
 }
 
-function runJob_(job, ctx, allJobs) {
+function* runJobE_(job, ctx, allJobs) {
   const now = Date.now();
   const runNo = job.runs + 1;
   const chatIds = resolveRecipients_(job, ctx);
@@ -88,16 +86,16 @@ function runJob_(job, ctx, allJobs) {
     job.status = 'stopped';
     job.last_error = 'list deleted';
     saveJob_(job);
-    notifyAdmins_('⏹ Job #' + job.job_id + ' stopped: list "' + esc_(job.target) + '" no longer exists');
+    yield* notifyAdminsE_('⏹ Job #' + job.job_id + ' stopped: list "' + esc_(job.target) + '" no longer exists');
     return;
   }
 
-  // Advance the schedule BEFORE sending (at-most-once): if the script dies mid-run,
-  // the next tick won't duplicate the post in every chat.
-  job.next_run_ms = computeNextRun_(job.next_run_ms, job.interval_min, job.end_ms, now);
-  if (!job.next_run_ms) job.status = 'done';
+  // Advance the schedule BEFORE sending (at-most-once): if the process dies mid-run,
+  // nobody re-sends this slot — neither this backend nor the other one after a failover.
+  job.next_run = computeNextRun_(job.next_run, job.interval_min, job.end, now);
+  if (!job.next_run) job.status = 'done';
   job.runs = runNo;
-  job.last_run = new Date(now);
+  job.last_run = now;
 
   if (!chatIds.length) {
     job.last_error = 'list is empty';
@@ -105,9 +103,10 @@ function runJob_(job, ctx, allJobs) {
     return;
   }
   saveJob_(job);
+  yield* checkpointE_(); // server: persist the advanced schedule to the sheet before sending
 
-  const results = sendToChats_(job, chatIds, function (oldId, newId) {
-    // group → supergroup: fix the sheet and this tick's in-memory jobs, otherwise they'd overwrite the new ID
+  const results = yield* sendToChatsE_(job, chatIds, function (oldId, newId) {
+    // group → supergroup: fix storage and this run's in-memory jobs, otherwise they'd overwrite the new ID
     migrateChatId_(oldId, newId);
     allJobs.forEach(function (j) { if (j.target_type === 'chat' && j.target === String(oldId)) j.target = String(newId); });
     if (ctx.byId[oldId]) ctx.byId[newId] = ctx.byId[oldId];
@@ -120,7 +119,7 @@ function runJob_(job, ctx, allJobs) {
   const delivered = results.filter(function (r) { return r.ok; }).length;
   const summary = failed.map(function (f) { return f.chatId + ': ' + f.error; }).join('; ').slice(0, 500);
   if (summary && summary !== String(job.last_error || '')) {
-    notifyAdmins_('⚠️ Job #' + job.job_id + ': not delivered to ' + failed.length + ' of ' + (failed.length + delivered) + ' chats\n' +
+    yield* notifyAdminsE_('⚠️ Job #' + job.job_id + ': not delivered to ' + failed.length + ' of ' + (failed.length + delivered) + ' chats\n' +
       failed.map(function (f) {
         const t = (ctx.byId[String(f.chatId)] || {}).title;
         return '• ' + (t ? esc_(t) + ' ' : '') + '<code>' + f.chatId + '</code> — ' + esc_(f.error);
@@ -130,21 +129,21 @@ function runJob_(job, ctx, allJobs) {
   saveJob_(job);
 
   if (job.status === 'done') {
-    notifyAdmins_('✅ Job #' + job.job_id + ' finished. Posts: ' + job.runs +
+    yield* notifyAdminsE_('✅ Job #' + job.job_id + ' finished. Posts: ' + job.runs +
       (job.runs === 1 ? ', delivered ' + delivered + ' of ' + (failed.length + delivered) : ''));
   }
 }
 
 function writeLog_(job, runNo, results, ctx) {
-  const at = new Date();
-  appendRows_('log', results.map(function (r) {
+  const at = Date.now();
+  insert_('log', results.map(function (r) {
     const info = ctx.byId[String(r.chatId)] || {};
     return {
-      time: at, job_id: job.job_id, run: runNo,
+      time: at, job_id: job.job_id, run: runNo, backend: PLATFORM.name,
       target: job.target_type + ':' + job.target,
       chat_id: String(r.chatId),
       chat_title: info.title || (job.target_type === 'chat' ? job.target_title : '') || '',
-      message_id: r.messageId || '',
+      message_id: r.messageId || null,
       link: r.ok ? messageLink_(r.chatId, info.username, r.messageId) : '',
       status: r.ok ? 'ok' : (r.migratedTo ? 'migrated' : 'error'),
       error: r.error || '',
@@ -174,13 +173,13 @@ function buildSendCall_(job, chatId) {
  *   migrate_to_chat_id    → group became a supergroup: onMigrate(old, new) and retry with the new ID.
  * Returns [{chatId, ok, messageId, error, migratedTo}]
  */
-function sendToChats_(job, chatIds, onMigrate) {
+function* sendToChatsE_(job, chatIds, onMigrate) {
   const out = [];
   let pending = chatIds.slice();
   for (let attempt = 0; attempt < 3 && pending.length; attempt++) {
     const retry = [];
     let wait = 0;
-    const resps = tgBatchChunked_(pending.map(function (id) { return buildSendCall_(job, id); }));
+    const resps = yield* tgBatchChunkedE_(pending.map(function (id) { return buildSendCall_(job, id); }));
     resps.forEach(function (r, k) {
       const id = pending[k];
       const params = r.parameters || {};
@@ -198,7 +197,7 @@ function sendToChats_(job, chatIds, onMigrate) {
         out.push({ chatId: id, ok: false, error: (r.error_code ? r.error_code + ' ' : '') + (r.description || 'unknown error') });
       }
     });
-    if (retry.length && wait) Utilities.sleep(wait * 1000);
+    if (retry.length && wait) yield* sleepE_(wait * 1000);
     pending = retry;
   }
   pending.forEach(function (id) { out.push({ chatId: id, ok: false, error: 'not sent after retries' }); });

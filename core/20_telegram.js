@@ -1,38 +1,11 @@
 /**
- * ======================== THIN BOT API CLIENT ==========================
- * Never throws on HTTP errors: returns {ok:false, error_code, description, parameters}.
+ * ========================== TELEGRAM (via effects) ==========================
+ * All calls go through tgE_/tgBatchE_ effects, so the same code runs in Apps Script and on the server.
  */
 
-function tgUrl_(method) { return 'https://api.telegram.org/bot' + getToken_() + '/' + method; }
-
-function tgParams_(payload) {
-  return {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload || {}),
-    muteHttpExceptions: true,
-  };
-}
-
-function tgParse_(res) {
-  try {
-    return JSON.parse(res.getContentText());
-  } catch (e) {
-    return { ok: false, error_code: res.getResponseCode(), description: 'Bad response: ' + res.getContentText().slice(0, 200) };
-  }
-}
-
-function tg_(method, payload) {
-  try {
-    return tgParse_(UrlFetchApp.fetch(tgUrl_(method), tgParams_(payload)));
-  } catch (e) {
-    return { ok: false, error_code: 0, description: 'Network: ' + e.message };
-  }
-}
-
-/** Like tg_, but throws an Error on ok:false. Used by setup functions. */
-function tgCall_(method, payload) {
-  const r = tg_(method, payload);
+/** Like tgE_, but throws an Error on ok:false. */
+function* tgCallE_(method, payload) {
+  const r = yield* tgE_(method, payload);
   if (!r.ok) {
     const err = new Error(method + ': ' + (r.description || 'Telegram error'));
     err.tg = r;
@@ -41,28 +14,12 @@ function tgCall_(method, payload) {
   return r.result;
 }
 
-/** Sends ONE batch of requests in parallel. calls: [{method, payload}] */
-function tgBatch_(calls) {
-  if (!calls.length) return [];
-  const reqs = calls.map(function (c) {
-    const p = tgParams_(c.payload);
-    p.url = tgUrl_(c.method);
-    return p;
-  });
-  try {
-    return UrlFetchApp.fetchAll(reqs).map(tgParse_);
-  } catch (e) {
-    // fetchAll fails as a whole on a network error — fall back to sequential requests
-    return calls.map(function (c) { return tg_(c.method, c.payload); });
-  }
-}
-
 /** Many requests: batches of CFG.SEND_BATCH with a pause (Telegram limit ~30 req/s). */
-function tgBatchChunked_(calls) {
+function* tgBatchChunkedE_(calls) {
   let out = [];
   for (let i = 0; i < calls.length; i += CFG.SEND_BATCH) {
-    if (i) Utilities.sleep(CFG.BATCH_PAUSE_MS);
-    out = out.concat(tgBatch_(calls.slice(i, i + CFG.SEND_BATCH)));
+    if (i) yield* sleepE_(CFG.BATCH_PAUSE_MS);
+    out = out.concat(yield* tgBatchE_(calls.slice(i, i + CFG.SEND_BATCH)));
   }
   return out;
 }
@@ -86,17 +43,18 @@ function splitMessage_(html) {
 }
 
 /** Reply in private chat (HTML). */
-function reply_(chatId, html) {
-  splitMessage_(html).forEach(function (p) {
-    const r = tg_('sendMessage', { chat_id: chatId, text: p, parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
-    if (!r.ok && r.error_code === 400) tg_('sendMessage', { chat_id: chatId, text: p.replace(/<[^>]+>/g, '') }); // broken markup → resend as plain text
-  });
+function* replyE_(chatId, html) {
+  const parts = splitMessage_(html);
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    const r = yield* tgE_('sendMessage', { chat_id: chatId, text: p, parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+    if (!r.ok && r.error_code === 400) yield* tgE_('sendMessage', { chat_id: chatId, text: p.replace(/<[^>]+>/g, '') }); // broken markup → plain text
+  }
 }
 
-function notifyAdmins_(html) {
-  getAdminIds_().forEach(function (id) {
-    try { reply_(id, html); } catch (e) { console.error('notify ' + id + ': ' + e.message); }
-  });
+function* notifyAdminsE_(html) {
+  const ids = getAdminIds_();
+  for (let i = 0; i < ids.length; i++) yield* replyE_(ids[i], html);
 }
 
 /** Link to a message (works for channels/supergroups). */
@@ -116,13 +74,12 @@ function chatTypeName_(t) {
 
 /**
  * Batch check: can the bot post to these chats?
- * Two rounds of parallel requests (getChat, then getChatMember) instead of 2×N sequential ones:
- * 50 chats are checked in ~2-3 s instead of ~40 s (important — a webhook must answer within a minute).
+ * Two rounds of parallel requests (getChat, then getChatMember) instead of 2×N sequential ones.
  * Returns an array of {ok, chat, problems[], warnings[]} in the order of refs.
  */
-function checkChatsAccess_(refs) {
+function* checkChatsAccessE_(refs) {
   const results = refs.map(function () { return { ok: false, chat: null, problems: [], warnings: [] }; });
-  const chatResps = tgBatchChunked_(refs.map(function (ref) { return { method: 'getChat', payload: { chat_id: ref } }; }));
+  const chatResps = yield* tgBatchChunkedE_(refs.map(function (ref) { return { method: 'getChat', payload: { chat_id: ref } }; }));
 
   const botId = getBotId_();
   const pending = [];
@@ -139,7 +96,7 @@ function checkChatsAccess_(refs) {
     pending.push(i);
   });
 
-  const memberResps = tgBatchChunked_(pending.map(function (i) {
+  const memberResps = yield* tgBatchChunkedE_(pending.map(function (i) {
     return { method: 'getChatMember', payload: { chat_id: results[i].chat.id, user_id: botId } };
   }));
   memberResps.forEach(function (gm, k) {
@@ -152,7 +109,7 @@ function checkChatsAccess_(refs) {
   return results;
 }
 
-function checkChatAccess_(ref) { return checkChatsAccess_([ref])[0]; }
+function* checkChatAccessE_(ref) { return (yield* checkChatsAccessE_([ref]))[0]; }
 
 /** Pure permission logic (no requests) — also reused for my_chat_member notifications. */
 function evaluateRights_(r, chat, m) {

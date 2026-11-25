@@ -1,0 +1,27 @@
+# Isolated project name: containers, volumes and networks are prefixed with it,
+# so this bot never clashes with other Docker apps/bots on the same server.
+name: tg-post-bot
+
+services:
+  bot:
+    container_name: tg-post-bot
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    env_file: server/.env
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google.json
+    volumes:
+      - bot-data:/data
+      - ./server/credentials.json:/run/secrets/google.json:ro
+    stop_grace_period: 30s
+    # resource caps so this bot can't starve other services on the VPS
+    mem_limit: 256m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  bot-data:

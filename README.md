@@ -1,70 +1,57 @@
 # Telegram Autopost Bot
 
-**Version 1.0.0** · [Changelog](CHANGELOG.md)
+**Version 2.0.0** · [Changelog](CHANGELOG.md)
 
-A Telegram bot that publishes scheduled posts to lists of channels and groups. **No server required**: it runs on free Google Apps Script, and all data (lists, chats, post templates, and a delivery log with `message_id`s) lives in a Google Sheet.
+A Telegram bot that publishes scheduled posts to lists of channels and groups. It has **two interchangeable backends** that share one codebase, one bot token, and one Google Sheet:
+
+| Backend | Runs on | Storage | Receives commands via |
+|---|---|---|---|
+| **Apps Script** (`gas`) | Google's servers, free, no server needed | Google Sheet | webhook |
+| **Server** (`server`) | your VPS (Docker) | SQLite, mirrored to the Google Sheet | long polling |
+
+Only one backend is active at a time. You move the bot between them with **`/switch server`** and **`/switch gas`**, and lists, chats, jobs and schedules follow along. If the active server goes silent, Apps Script **takes over automatically**.
 
 ## Architecture
 
 ```
-Telegram ──webhook──▶ doPost()  (Apps Script Web App)
-                        └─ handleUpdate_ → commands → Google Sheets (Lists / Chats / Jobs)
-Time trigger (1 min) ─▶ tick()
-                        ├─ NEXT_DUE not reached? → exit in milliseconds, sheet untouched
-                        └─ due jobs → sendMessage/copyMessage (parallel, fetchAll)
-                                    → Log sheet (message_id, link, errors)
+                          ┌──────────── Google Sheet ────────────┐
+                          │ Lists · Chats · Jobs · Log · Control │
+                          └──────▲───────────────────────▲───────┘
+                     read/write  │                       │  mirror (after every change)
+                                 │                       │  + import on takeover
+ Telegram ──webhook──▶ Apps Script backend        Server backend ◀──getUpdates── Telegram
+                       (doPost, tick/1 min)        (Node.js, SQLite, Docker)
+                                 └──────── core/ (shared code) ───────┘
 ```
 
-| Sheet   | Contents |
-|---------|----------|
-| `Lists` | lists |
-| `Chats` | list ↔ chat links (ID, title, type, @username); one chat can be in several lists |
-| `Jobs`  | post templates and schedules: text + formatting, target, start, interval, end, mix, next run, status |
-| `Log`   | every delivery: time, job, chat, **message_id**, post link, status/error |
+- **`core/`** contains all bot logic: command parsing, scheduling, mix mode, permission checks and message texts. Both backends run exactly the same files.
+- Core functions that talk to Telegram are generators that `yield` *effects* (`tg`, `batch`, `sleep`, `checkpoint`, …). Apps Script executes them synchronously with `UrlFetchApp`; the server executes them asynchronously with `fetch`. Storage, lock, time zone and secrets come from a small `PLATFORM` adapter.
+- **`Control` sheet** holds `active_backend`, `epoch`, `server_heartbeat`, `switched_at/by`, and the Apps Script webhook URL.
 
-Files: `Config.gs` (settings), `Telegram.gs` (Bot API, permission checks), `Storage.gs` (Sheets), `Parser.gs` (command & schedule parsing), `Scheduler.gs` (delivery), `Commands.gs` (commands), `Main.gs` (webhook & setup).
+### Switching and safety
 
-### Tech stack
+| Situation | What happens |
+|---|---|
+| `/switch server` (handled by Apps Script) | Refused unless the server heartbeat is < 90 s old. Otherwise: flag → `server`, webhook removed. Within ≤ 15 s the server imports the sheet into SQLite, starts polling, and confirms in chat. |
+| `/switch gas` (handled by the server) | The server flushes SQLite to the sheet, confirms the processed update, sets the flag to `gas` and points the webhook back to Apps Script. Messages sent after the switch command are delivered to Apps Script. Apps Script confirms within ≤ 1 min. |
+| Server crashes or loses its network | Apps Script takes over after **5 min** without a heartbeat and notifies you (disable with the script property `AUTO_FAILOVER=off`). |
+| Server can't reach Google Sheets | It stops itself after **3 min** (lease), *before* Apps Script takes over, so the two never post at the same time. |
+| Server restarts while Apps Script is active | It stays passive. |
+| Duplicates | A post's next slot is saved (and mirrored to the sheet) **before** it is sent, so a slot is never sent twice, even across a failover. |
 
-| Component | Role | Why |
-|-----------|------|-----|
-| Google Apps Script (V8 JavaScript) | runtime | free Google-hosted cloud runtime: no server, VPS, or bills |
-| Web App + webhook | receives commands | Telegram pushes updates to the script, so replies are instant |
-| Time-driven trigger | scheduler | built-in, no external cron |
-| Google Sheets | storage & log | human-readable and editable, free, zero setup |
-| Raw Telegram Bot API | messaging | bot frameworks don't run in Apps Script; raw calls give full control over limits, retries, and parallel sends |
-| Script Properties | secrets | the token never lives in code or in the sheet |
+While the server is active the sheet is a live mirror: view it freely, but edit data through the bot, because the server overwrites manual edits.
 
-### Design decisions
-- **At-most-once delivery:** the schedule is advanced before sending, so if Google kills the execution mid-run, posts are not duplicated across chats.
-- **Missed slots are skipped, not burst-sent:** after a delayed trigger or a pause, the bot posts at the next future slot.
-- **Quota-friendly:** the next due time is cached in Script Properties, so the per-minute `tick()` costs almost nothing.
-- **Telegram rate limits:** sends in batches of 20 with ~1 s pauses. On `429`, the bot waits for `retry_after` and retries.
-- **Group upgraded to supergroup** (`migrate_to_chat_id`): the bot updates the ID in all lists and resends.
-- **Webhook security:** secret in the URL, `update_id` deduplication, commands accepted only in private chat from `ADMIN_IDS`.
-- **Formatting preserved** (bold, links, spoilers, etc.) by carrying over message `entities`. Photos, videos and documents are posted via `copyMessage`.
-- **Sheet-safe writes:** every string is stored as text, so `=SUM(...)`, `-100123…`, `24.10.2026`, `TRUE` and `1.50` never turn into formulas, numbers or dates.
-- **Fewer sheet reads:** each sheet is read once per command or scheduler run. Adjacent rows are deleted in a single call.
-- **Batched permission checks:** `/addchat` and `/checkchats` check all chats in parallel, so 50 chats take ~2–3 s instead of ~40 s and the webhook never times out.
-- **Manual sheet edits are safe:** blank rows are skipped, and there's no cache between runs.
+## Repository layout
 
-## Does the bot need to be in the chat? Which rights?
-
-Yes. The Bot API **does not allow** posting to chats the bot isn't in. `/addchat` and `/post -chat` therefore check this upfront (`getChat` + `getChatMember`) and explain any problem.
-
-| Chat type | Minimum |
-|-----------|---------|
-| **Channel** | bot is an **administrator** with just the **"Post messages"** right. Everything else can be off. |
-| **Group / supergroup** | a **regular member** is enough if members may send messages. Otherwise the bot needs admin status, even with no rights ticked. |
-
-Warnings (they don't block adding):
-- **Slow mode** applies to a non-admin bot, so make it an admin for frequent posting.
-- If members can't send media, photo posts will fail.
-- Telegram limits sending to about 20 messages per minute per group and about 30 per second overall.
-
-Rights can change later (the bot is removed or demoted). The bot then tells you once which chats failed and why. Run `/checkchats` for a full check.
-
-**Finding a chat ID:** add the bot to the channel or group, and it will DM you the ID, its status and a ready-made `/addchat` command. You can also use `@username` or a `t.me/...` link.
+```
+core/                shared bot logic (plain JS, loaded as globals on both backends)
+apps-script/         Apps Script adapter: Platform.gs (Sheets, Control, sync driver), Main.gs, appsscript.json
+server/              Node.js backend: src/ (backend, SQLite, Sheets mirror, Telegram), Dockerfile, .env.example
+scripts/build-gas.js bundles core + apps-script into dist/apps-script for clasp
+tests/               Node test suite: Apps Script backend, server, switching & failover
+docker-compose.yml   runs the server
+.github/workflows/   tests on every push; deploys both backends on a version tag
+```
 
 ## Commands
 
@@ -72,7 +59,7 @@ Rights can change later (the bot is removed or demoted). The bot then tells you 
 /addlist news                         — create a list
 /removelist news                      — delete a list and its chats; its jobs are stopped
 /lists, /showlist news                — view lists
-/addchat -1001234567890 news          — add a chat (several IDs separated by spaces allowed)
+/addchat -1001234567890 news          — add chats (several IDs, @username or t.me links)
 /removechat -1001234567890 news       — remove from one list
 /removechat -1001234567890            — remove from all lists
 /checkchats [news]                    — re-check the bot's permissions
@@ -82,52 +69,100 @@ Rights can change later (the bot is removed or demoted). The bot then tells you 
 /post hi, andrew -chat -1001234567890 -start 24.10.2026 14:00 -regularity 2h -end 26.11.2026 12:00
 
 /jobs, /pausejob 3, /resumejob 3, /stopjob 3
-/version                              — bot version
-/help                                 — help
+
+/status                               — active backend, server health, counts
+/switch server | /switch gas          — move the bot between backends
+/version, /help
 ```
 
 `/post` rules:
 - The text is everything before the first flag. It may span multiple lines and include formatting.
-- No `-start` (or `-start now`) means the post goes out now, within a minute.
+- No `-start` (or `-start now`) means the post goes out now.
 - No `-regularity` or `-mix` means a one-time post.
-- `-end` is inclusive: the last post is no later than that time.
-- `-mix X in N`: the first post goes to all chats, then every X to N random chats (all chats if there are ≤ N). Without `-end` it runs indefinitely.
-- Intervals: `2h`, `0.75h`, `45m`, `1d`. The minimum is 5 min (`CFG.MIN_INTERVAL_MIN`).
-- Dates use the format `24.10.2026 14:00` in the script time zone (`Europe/Kiev`, set in `appsscript.json`).
-- **Media:** send a photo or video with the caption `/post caption text -list news -start ...`, or reply `/post -list news ...` to any message. The bot copies it as is, so don't delete the original message.
-- List membership is resolved at each post, so chats added later receive posts too.
-- Flags also accept "—", because iOS auto-replaces `--` with an em dash.
+- `-end` is inclusive.
+- `-mix X in N`: the first post goes to all chats, then every X to N random chats.
+- Intervals: `2h`, `0.75h`, `45m`, `1d` (minimum 5 min).
+- Dates: `24.10.2026 14:00` in the sheet's time zone (`Europe/Kiev` by default).
+- **Media:** send media with the caption `/post … -list …`, or reply `/post -list …` to any message.
+- Flags also accept "—" (iOS turns `--` into an em dash).
 
-## Setup (~10 minutes)
+**Bot permissions:**
+- **Channel:** the bot must be an admin with the "Post messages" right.
+- **Group:** a regular member is enough if members can send messages.
+- `/addchat` checks this upfront.
+- When you add the bot to a chat, it DMs you the chat ID.
 
-1. **Bot.** In @BotFather run `/newbot` and copy the token.
-2. **Sheet.** Create a new Google Sheet, then open **Extensions → Apps Script**.
-3. **Code.** Create the script files `Config`, `Telegram`, `Storage`, `Parser`, `Scheduler`, `Commands` and `Main`, and paste in the matching `.gs` files. In **Project Settings** enable *Show "appsscript.json"* and replace its contents with the file from this repo.
-   *Or use [clasp](https://github.com/google/clasp): `clasp create --type sheets`, then `clasp push`.*
-4. **Secrets.** In **Project Settings → Script properties** add:
-   - `BOT_TOKEN` — the bot token;
-   - `ADMIN_IDS` — your Telegram ID. Get it from @userinfobot, or send `/start` to the bot after setup and it will reply with your ID.
-5. **setup.** Select the `setup` function, click **Run**, and grant the Google permissions.
-6. **Deploy.** Click **Deploy → New deployment → Web app**:
-   - *Execute as:* **Me**;
-   - *Who has access:* **Anyone** (not "Anyone with Google account", or Telegram can't reach it).
+## Setup
 
-   Copy the `…/exec` URL and save it as the `WEBAPP_URL` script property.
-7. **setWebhook.** Run `setWebhook`. It connects the webhook and creates the per-minute trigger.
-8. Send `/help` to the bot.
+### 1. Apps Script backend (required: it owns the sheet and is the fallback)
 
-**Updating the code:** go to Deploy → Manage deployments → ✏️ → Version: *New version*. The URL stays the same, so the webhook doesn't need resetting.
+1. Create the bot in @BotFather and copy the token.
+2. Create a Google Sheet → **Extensions → Apps Script**. Copy the **Script ID** (Project Settings).
+3. On your computer (Node 22+):
+   ```bash
+   npm install                      # installs clasp and the server dependencies
+   npx clasp login                  # once; enable the API at https://script.google.com/home/usersettings
+   cp .clasp.json.example .clasp.json   # put your Script ID inside
+   npm run push:gas                 # builds dist/apps-script and uploads it
+   ```
+4. **Project Settings → Script properties:** `BOT_TOKEN`, `ADMIN_IDS` (your Telegram ID; the bot tells it to you on `/start`).
+5. Run `setup()` in the editor and grant the permissions. It creates the `Lists`, `Chats`, `Jobs`, `Log` and `Control` sheets.
+6. **Deploy → New deployment → Web app:** *Execute as:* Me; *Who has access:* **Anyone**. Save the `…/exec` URL as the `WEBAPP_URL` script property. Note the **deployment ID**.
+7. Run `setWebhook()`. Then send `/help` to the bot.
 
-**Diagnostics:** `webhookInfo()` shows `last_error_message` and the pending update count. If you see persistent errors (e.g. `302`), switch to `usePolling()`. That mode needs no web app, and commands are processed once a minute.
+### 2. Server backend (optional)
 
-## Free Apps Script limits
-- Schedule accuracy is ±1 minute: the trigger fires once a minute at a random second, so a post may go out up to 30 s early.
-- Trigger runtime is 90 min/day (6 h on Workspace accounts), and external requests are capped at 20,000/day. An idle `tick()` takes a fraction of a second, which leaves room for hundreds of posts per day.
-- Intervals are absolute time. After a DST switch, "every 1d" shifts by an hour in local time.
-- For albums, only the message you replied to is copied.
+1. **Service account** (one time, ~5 min): in [Google Cloud Console](https://console.cloud.google.com/):
+   - create a project and enable the **Google Sheets API**;
+   - go to IAM → Service accounts → Create, then Keys → Add key → JSON;
+   - download the key file;
+   - open the bot's Google Sheet → **Share** → add the service account e-mail as **Editor**.
+2. **VPS** with Docker (any provider; 1 vCPU / 1 GB RAM is plenty):
+   ```bash
+   git clone https://github.com/<you>/tg_post_bot.git && cd tg_post_bot
+   cp server/.env.example server/.env        # BOT_TOKEN, ADMIN_IDS, SPREADSHEET_ID
+   nano server/.env
+   # upload the key as server/credentials.json, then make it readable for the container user:
+   chmod 644 server/credentials.json
+   docker compose up -d --build
+   docker compose logs -f                    # "tg-post-bot server v2.0.0, time zone Europe/Kiev"
+   ```
+   The server starts **passive**: it only writes heartbeats. `/status` should now show *Server: 🟢 online*.
+3. Send **`/switch server`**. The server confirms in chat when it has taken over.
 
-## Versioning
-The version is set in `Config.gs` (`VERSION`, `RELEASE_DATE`) and shown by `/version`. For a new release, bump `VERSION`, `RELEASE_DATE` and `CHANGELOG.md`, then create a git tag.
+## Updating
+
+**Manually:**
+```bash
+# Apps Script (the web app URL stays the same)
+npm run push:gas && npx clasp deploy -i <DEPLOYMENT_ID> -d "v2.0.1"
+
+# Server (SQLite data lives in a Docker volume and survives rebuilds)
+ssh you@vps 'cd tg_post_bot && git pull && docker compose up -d --build'
+```
+
+**Automatically:** push a tag and GitHub Actions tests and deploys both backends (see `.github/workflows/deploy.yml` for the required secrets):
+```bash
+git tag v2.0.1 && git push --tags
+```
+
+A server restart takes a few seconds. Telegram keeps pending messages, and failover only starts after 5 minutes, so updates don't cause a switch.
+
+## Limits
+
+| | Apps Script | Server |
+|---|---|---|
+| Schedule accuracy | ±1 min (posts may go up to 30 s early) | ~5 s |
+| Command response | 1–3 s | < 1 s (+ sheet mirroring in the background) |
+| Quotas | 90 min of triggers/day, 20k fetches/day | Sheets API ~300 requests/min |
+
+Intervals are absolute time, so after a DST switch "every 1d" shifts by an hour in local time. For albums, only the replied-to message is copied.
 
 ## Tests
-`tests/` contains a Node harness with Apps Script and Telegram mocks. Run `node tests/test.js`. The tests cover every spec example, mix mode, permission errors, group migration, pause/resume, update deduplication, and the regressions above.
+
+```bash
+npm install
+npm test     # Apps Script backend + server + switching/failover scenarios
+```
+
+The suite runs the real code against a fake Telegram and a fake Google Sheet, which both backends share in-process.
